@@ -58,9 +58,10 @@ class AutobusElettrico(Autobus):
         }
 
         # Aggiornamento "pacchetto" dati generale con l'aggiunta di quello specifico
-        # deepcopy(self._updated_data), anzi meglio metodo copy con copia superficiale perché i valori nelle coppie
-        # chiave - valore non sono mai liste o dizionari, sono sempre oggetti immutabili
-        self._data_to_send["collected_metrics"]["electric"] = self._updated_data
+        self._data_to_send["collected_metrics"]["electric"] = deepcopy(self._updated_data)
+        # Sarebbe più adatto utilizzare il metodo copy con copia superficiale perché i valori nelle coppie
+        # chiave - valore non sono mai liste o dizionari, sono sempre oggetti immutabili, però per avere un maggiore
+        # grado di sicurezza ed essere coperti da eventuali modifiche si utilizza la copia profonda
 
         # Connessione al broker MQTT
         self.connect_to_mqtt_broker()
@@ -134,15 +135,26 @@ class AutobusElettrico(Autobus):
 
     # Getter 'updated_data' parameter
     def get_updated_data(self):
-        # Forse meglio copy()
         return deepcopy(self._updated_data)
 
     # Setter 'updated_data' parameter
+    def set_updated_data(self, updated_data: dict):
+        if type(updated_data) is not dict:
+            raise TypeError(f"Errore! Il tipo del parametro passato deve essere 'dict'. Ricevuto {type(updated_data)}")
+
+        self._updated_data.update(updated_data)
+        self._data_to_send["collected_metrics"]["electric"].update(updated_data)
 
     # Getter 'threshold_list' parameter
     def get_threshold_list(self):
-        # Forse meglio copy()
         return deepcopy(self._threshold_list)
+    
+    # Setter 'threshold_list' parameter
+    def set_threshold_list(self, threshold_list: list):
+        if type(threshold_list) is not list:
+            raise TypeError(f"Errore! Il tipo del parametro passato deve essere 'list'. Ricevuto {type(threshold_list)}")
+        
+        self._threshold_list = deepcopy(threshold_list)
 
     # Getter 'static_threshold' parameter
     def get_static_threshold(self):
@@ -153,8 +165,28 @@ class AutobusElettrico(Autobus):
         if type(static_threshold) is not float:
             raise TypeError(f"Errore! Il tipo del parametro passato deve essere 'float'. Ricevuto {type(static_threshold)}")
         
-        # Modifica anche della lista da cui generare la soglia dinamica di rifornimento e reimpostazione di questa
         self._static_threshold = static_threshold
+
+        # Modifica della lista da cui generare la soglia dinamica di rifornimento e reimpostazione di questa
+        threshold_list = self.get_threshold_list()
+        # Verifica che la nuova soglia statica sia maggiore dell'ultimo elemento della lista (soglia precedente)
+        if static_threshold > threshold_list[-1]:
+            # In questo caso si genera una nuova lista per estendere la precedente
+            #   [a, b] && c > b --> [a, b, b+1, c]
+            extend_list = []
+            for i in np.arange(threshold_list[-1] + 1, static_threshold + 1, 1.0):
+                extend_list.append(i)
+            
+            threshold_list.extend(extend_list)
+        # Verifica che la nuova soglia sia al contrario minore dell'ultimo elemento della lista (soglia precedente), 
+        # e un numero non negativo
+        elif static_threshold < threshold_list[-1] and static_threshold >= 0.0:
+            # In questo caso si "taglia" la vecchia lista all'indice dell'elemento già presente al suo interno
+            #   [a, b] && c < b --> [a, c]
+            upper_bound = threshold_list.index(static_threshold)
+            threshold_list = threshold_list[0:upper_bound+1]
+        
+        self.set_threshold_list(threshold_list)
 
     # Getter 'dynamic_threshold' parameter
     def get_dynamic_threshold(self):
