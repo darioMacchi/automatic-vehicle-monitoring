@@ -1,5 +1,7 @@
 from autobus import Autobus
+from autobus_elettrico import AutobusElettrico
 from autobus_ibrido import AutobusIbrido
+from autobus_termico import AutobusTermico
 
 
 # Test costruttore
@@ -250,6 +252,29 @@ def test_costruttore_hybrid(num_autobus: int, ranges: dict, timeout: float, host
 
     return flag
 
+# Test robustezza metodo simulate() per evitare problemi nell'evenutalità di errore nella chiamata o di errato utilizzo
+# semantico, ossia che l'utilizzo non avvenga all'interno di un ciclo
+def test_robustness_simulate(ranges: dict, timeout: float, host: str, port: int, long_low: float, long_up: float, lat_low: float, lat_up: float, tyre_low: float, tyre_up: float, psg_low: int, psg_up: int, brake_range: list, engine_range: list, bt_temp_low: float, bt_temp_up: float, cont_fermate: int):
+    flag = True
+
+    termic_autobus = AutobusTermico(ranges=ranges, timeout=timeout, host=host, port=port)
+    hybrid_autobus = AutobusIbrido(ranges=ranges, timeout=timeout, host=host, port=port)
+    electric_autobus = AutobusElettrico(ranges=ranges, timeout=timeout, host=host, port=port)
+
+    hybrid_autobus.simulate(False, cont_fermate)
+    if flag and ( (hybrid_autobus.get_latitude() < lat_low or hybrid_autobus.get_latitude() > lat_up) or (hybrid_autobus.get_longitude() < long_low or hybrid_autobus.get_longitude() > long_up) or (hybrid_autobus.get_tyre_pressure() < tyre_low or hybrid_autobus.get_tyre_pressure() > tyre_up) or (hybrid_autobus.get_num_psg() < psg_low or hybrid_autobus.get_num_psg() > psg_up) or (hybrid_autobus.get_brake_status() not in [brake_range[-3], brake_range[-2], brake_range[-1]]) or (hybrid_autobus.get_engine_status() not in [engine_range[-3], engine_range[-2], engine_range[-1]]) or (hybrid_autobus.get_battery_temp() < bt_temp_low or hybrid_autobus.get_battery_temp() > bt_temp_up) ):
+        flag = False
+    
+    electric_autobus.simulate(False, cont_fermate)
+    if flag and ( (electric_autobus.get_latitude() < lat_low or electric_autobus.get_latitude() > lat_up) or (electric_autobus.get_longitude() < long_low or electric_autobus.get_longitude() > long_up) or (electric_autobus.get_tyre_pressure() < tyre_low or electric_autobus.get_tyre_pressure() > tyre_up) or (electric_autobus.get_num_psg() < psg_low or electric_autobus.get_num_psg() > psg_up) or  (electric_autobus.get_brake_status() not in [brake_range[-3], brake_range[-2], brake_range[-1]]) or (electric_autobus.get_engine_status() not in [engine_range[-3], engine_range[-2], engine_range[-1]]) or (electric_autobus.get_battery_temp() < bt_temp_low or electric_autobus.get_battery_temp() > bt_temp_up) ):
+        flag = False
+
+    termic_autobus.simulate(False, cont_fermate)
+    if flag and ( (termic_autobus.get_latitude() < lat_low or termic_autobus.get_latitude() > lat_up) or (termic_autobus.get_longitude() < long_low or termic_autobus.get_longitude() > long_up) or (termic_autobus.get_tyre_pressure() < tyre_low or termic_autobus.get_tyre_pressure() > tyre_up) or (termic_autobus.get_num_psg() < psg_low or termic_autobus.get_num_psg() > psg_up) or (termic_autobus.get_brake_status() not in [brake_range[-3], brake_range[-2], brake_range[-1]]) or (termic_autobus.get_engine_status() not in [engine_range[-3], engine_range[-2], engine_range[-1]]) ):
+        flag = False
+
+    return flag
+
 
 # Method main() - metodo che consente di eseguire i test progettati
 def main():
@@ -257,17 +282,19 @@ def main():
     ranges = {
         #       GPS
         "gps": {
-            "longitude_low": 20.5,
-            "longitude_up": 25.5,
-            "latitude_low": 10.5,
-            "latitude_up": 15.5
+            #   [°N]
+            "latitude_low": 44.49321,
+            "latitude_up": 44.83591,
+            #   [°E]
+            "longitude_low": 11.27662,
+            "longitude_up": 11.61932
         },
         #       [km/h]
         "speed_low": 0.0,
-        "speed_up": 120.0,
+        "speed_up": 100.0,
         #       [bar]
         "tyre_pressure_low": 1.0,
-        "tyre_pressure_up": 3.0,
+        "tyre_pressure_up": 4.5,
         #       Brake Status
         "brake_status": ["pessimo", "mediocre", "cattivo", "accettabile", "buono", "ottimo", "eccellente"],
         #       Engine Status
@@ -330,7 +357,8 @@ def main():
     flag_long_direction = test_long_direction(autobus)
     flag_f_data = test_set_formatted_data_to_send(autobus)
     flag_sim = test_simulate(autobus, ranges["gps"]["longitude_low"], ranges["gps"]["longitude_up"], ranges["gps"]["latitude_low"], ranges["gps"]["latitude_up"], ranges["speed_low"], ranges["speed_up"], ranges["tyre_pressure_low"], ranges["tyre_pressure_up"], ranges["num_psg_low"], ranges["num_psg_up"], ranges["environmental"]["temp_low"], ranges["environmental"]["temp_up"], ranges["environmental"]["hum_low"], ranges["environmental"]["hum_up"], ranges["brake_status"], ranges["engine_status"], True, 1)
-    flag_costruttore_hybrid = test_costruttore_hybrid(10, ranges, delay_mqtt, host, port)
+    flag_costruttore_hybrid = test_costruttore_hybrid(9, ranges, delay_mqtt, host, port)
+    flag_robustness = test_robustness_simulate(ranges, delay_mqtt, host, port, ranges["gps"]["longitude_low"], ranges["gps"]["longitude_up"], ranges["gps"]["latitude_low"], ranges["gps"]["latitude_up"], ranges["tyre_pressure_low"], ranges["tyre_pressure_up"], ranges["num_psg_low"], ranges["num_psg_up"], ranges["brake_status"], ranges["engine_status"], ranges["battery_temp_low"], ranges["battery_temp_up"], 1)
 
     # Reporting test
     print("Reporting test condotti:")
@@ -353,6 +381,7 @@ def main():
     print("\tTest set_formatted_data_to_send(): " + "SUPERATO" if flag_f_data else "NON SUPERATO")
     print("\tTest simulate(): " + "SUPERATO" if flag_sim else "NON SUPERATO")
     print("\tTest costruttore hybrid: " + "SUPERATO" if flag_costruttore_hybrid else "NON SUPERATO")
+    print("\tTest robustezza simulate(): " + "SUPERATO" if flag_robustness else "NON SUPERATO")
 
     # Reporting test semantica set_lat_direction() e set_long_direction()
     autobus.set_lat_direction("nord")
