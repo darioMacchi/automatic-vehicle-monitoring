@@ -274,19 +274,20 @@ class AutobusIbrido(Autobus):
 
                 # Verifica presenza dell'intervallo [prec_bt_lvl - bt_lvl_span, prec_bt_lvl + bt_lvl_span] all'interno
                 # dell'intervallo generale
-                if ( prec_bt_lvl - bt_lvl_span ) >= self._ranges["battery_lvl_low"] and ( prec_bt_lvl + bt_lvl_span ) <= self._ranges["battery_lvl_up"]:
+                if ( prec_bt_lvl - bt_lvl_span ) >= self._ranges["battery_lvl_low"] and ( prec_bt_lvl + bt_lvl_span ) <= self._ranges["battery_lvl_up"] and ( prec_bt_lvl + bt_lvl_span ) >= ( prec_bt_lvl - bt_lvl_span ):
                     self.set_battery_lvl( round( random.random() * (( prec_bt_lvl + bt_lvl_span ) - ( prec_bt_lvl - bt_lvl_span )) + ( prec_bt_lvl - bt_lvl_span ), 2 ) )
                 # Verifica uscita dall'intervallo generale dell'estremo inferiore
-                elif ( prec_bt_lvl - bt_lvl_span ) < self._ranges["battery_lvl_low"] and ( prec_bt_lvl + bt_lvl_span ) <= self._ranges["battery_lvl_up"]:
+                elif ( prec_bt_lvl - bt_lvl_span ) < self._ranges["battery_lvl_low"] and ( prec_bt_lvl + bt_lvl_span ) <= self._ranges["battery_lvl_up"] and ( prec_bt_lvl + bt_lvl_span ) >= self._ranges["battery_lvl_low"]:
                     self.set_battery_lvl( round( random.random() * (( prec_bt_lvl + bt_lvl_span ) - self._ranges["battery_lvl_low"]) + self._ranges["battery_lvl_low"], 2 ) )
                 # Uscita dall'intervallo generale dell'estremo superiore
-                elif ( prec_bt_lvl + bt_lvl_span ) > self._ranges["battery_lvl_up"] and ( prec_bt_lvl - bt_lvl_span ) >= self._ranges["battery_lvl_low"]:
+                elif ( prec_bt_lvl + bt_lvl_span ) > self._ranges["battery_lvl_up"] and ( prec_bt_lvl - bt_lvl_span ) >= self._ranges["battery_lvl_low"] and self._ranges["battery_lvl_up"] >= ( prec_bt_lvl - bt_lvl_span ):
                     self.set_battery_lvl( round( random.random() * (self._ranges["battery_lvl_up"] - ( prec_bt_lvl - bt_lvl_span )) + ( prec_bt_lvl - bt_lvl_span ), 2 ) )
-                # Gestione alternativa - per le ipotesi della funzione i casi che possono avvenire sono solamente i tre
-                # già gestiti immediatamente sopra, però viene aggiunta una gestione alternativa per evitare eventuali
-                # problemi
                 else:
-                    sys.stderr.write("Errore! Ripristino batteria iniziale\n")
+                    # Alternativa prevista nel caso in cui venga utilizzato l'oggetto con chiamata unica al metodo e non
+                    # all'interno di un ciclo come nell'utilizzo previsto, per cui nel caso in cui i metodi vengano utilizzati
+                    # come una sorta di API. Per questo stesso motivo è stata aggiunta la condizione che riguarda i due estremi
+                    # , ossia che l'estremo superiore utilizzato per l'aggiornamento sia effettivamente maggiore o uguale di
+                    # quello inferiore utilizzato nell'aggiornamento
                     self.set_battery_lvl(self._ranges["battery_lvl_up"])
 
             else:
@@ -302,19 +303,20 @@ class AutobusIbrido(Autobus):
 
                 # Verifica presenza dell'intervallo [prec_bt_temp - bt_temp_span, prec_bt_temp + bt_temp_span] all'interno
                 # dell'intervallo generale
-                if ( prec_bt_temp - bt_temp_span ) >= self._ranges["battery_temp_low"] and ( prec_bt_temp + bt_temp_span ) <= self._ranges["battery_temp_up"]:
+                if ( prec_bt_temp - bt_temp_span ) >= self._ranges["battery_temp_low"] and ( prec_bt_temp + bt_temp_span ) <= self._ranges["battery_temp_up"] and ( prec_bt_temp + bt_temp_span ) >= ( prec_bt_temp - bt_temp_span ):
                     self.set_battery_temp( round( random.random() * (( prec_bt_temp + bt_temp_span ) - ( prec_bt_temp - bt_temp_span )) + ( prec_bt_temp - bt_temp_span ), 2 ) )
                 # Verifica uscita dall'intervallo generale dell'estremo inferiore
-                elif ( prec_bt_temp - bt_temp_span ) < self._ranges["battery_temp_low"] and ( prec_bt_temp + bt_temp_span ) <= self._ranges["battery_temp_up"]:
+                elif ( prec_bt_temp - bt_temp_span ) < self._ranges["battery_temp_low"] and ( prec_bt_temp + bt_temp_span ) <= self._ranges["battery_temp_up"] and ( prec_bt_temp + bt_temp_span ) >= self._ranges["battery_temp_low"]:
                     self.set_battery_temp( round( random.random() * (( prec_bt_temp + bt_temp_span ) - self._ranges["battery_temp_low"]) + self._ranges["battery_temp_low"], 2 ) )
                 # Uscita dall'intervallo generale dell'estremo superiore
-                elif ( prec_bt_temp + bt_temp_span ) > self._ranges["battery_temp_up"] and ( prec_bt_temp - bt_temp_span ) >= self._ranges["battery_temp_low"]:
+                elif ( prec_bt_temp + bt_temp_span ) > self._ranges["battery_temp_up"] and ( prec_bt_temp - bt_temp_span ) >= self._ranges["battery_temp_low"] and self._ranges["battery_temp_up"] >= ( prec_bt_temp - bt_temp_span ):
                     self.set_battery_temp( round( random.random() * (self._ranges["battery_temp_up"] - ( prec_bt_temp - bt_temp_span )) + ( prec_bt_temp - bt_temp_span ), 2 ) )
-                # Gestione alternativa - per le ipotesi della funzione i casi che possono avvenire sono solamente i tre
-                # già gestiti immediatamente sopra, però viene aggiunta una gestione alternativa per evitare eventuali
-                # problemi
                 else:
-                    sys.stderr.write("Errore! Ripristino temperatura batteria iniziale\n")
+                    # Alternativa prevista nel caso in cui venga utilizzato l'oggetto con chiamata unica al metodo e non
+                    # all'interno di un ciclo come nell'utilizzo previsto, per cui nel caso in cui i metodi vengano utilizzati
+                    # come una sorta di API. Per questo stesso motivo è stata aggiunta la condizione che riguarda i due estremi
+                    # , ossia che l'estremo superiore utilizzato per l'aggiornamento sia effettivamente maggiore o uguale di
+                    # quello inferiore utilizzato nell'aggiornamento
                     self.set_battery_temp(initial_battery_temp)
 
             else:
