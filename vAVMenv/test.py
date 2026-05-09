@@ -1,5 +1,7 @@
 from autobus import Autobus
 from autobus_ibrido import AutobusIbrido
+from autobus_termico import AutobusTermico
+from autobus_elettrico import AutobusElettrico
 
 
 # Test costruttore
@@ -189,6 +191,78 @@ def test_set_formatted_data_to_send(autobus: Autobus):
     
     return flag
 
+# Test get_updated_data()
+def test_get_updated_data(autobus: AutobusTermico | AutobusIbrido | AutobusElettrico):
+    flag = False
+
+    dictionary = {
+        "fuel_level": 479.0,
+        "fuel_consumption": 1.0
+    }
+
+    autobus.set_updated_data(dictionary)
+
+    dictionary["fuel_level"] = 478.0
+    dictionary["fuel_consumption"] = 2.0
+
+    diz_autobus = autobus.get_updated_data()
+
+    if diz_autobus["fuel_level"] == 479.0 and diz_autobus["fuel_consumption"] == 1.0:
+        flag = True
+
+    return flag
+
+# Test set_updated_data()
+def test_set_updated_data(autobus: AutobusTermico | AutobusIbrido | AutobusElettrico):
+    flag = False
+
+    try:
+        autobus.set_updated_data(2)
+    except TypeError:
+        flag = True
+    
+    return flag
+
+# Test get_threshold_list()
+def test_get_threshold_list(autobus: AutobusTermico | AutobusIbrido | AutobusElettrico):
+    flag = False
+
+    lista = [0.0, 1.0, 2.0, 3.0, 4.0]
+
+    autobus.set_threshold_list(lista)
+
+    lista.append(5.0)
+
+    lista_autobus = autobus.get_threshold_list()
+
+    if len(lista_autobus) == 5:
+        flag = True
+
+    return flag
+
+# Test set_threshold_list()
+def test_set_threshold_list(autobus: AutobusTermico | AutobusIbrido | AutobusElettrico):
+    flag = False
+
+    try:
+        autobus.set_threshold_list(2)
+    except TypeError:
+        flag = True
+    
+    return flag
+
+# Test set_static_threshold()
+def test_set_static_threshold(autobus: AutobusTermico | AutobusIbrido | AutobusElettrico, stat_thres: float):
+    flag = False
+
+    autobus.set_static_threshold(stat_thres)
+    thres_list = autobus.get_threshold_list()
+
+    if len(thres_list) == int(stat_thres)+1:
+        flag = True
+    
+    return flag
+
 # Test simulate()
 def test_simulate(autobus: Autobus, long_low: float, long_up: float, lat_low: float, lat_up: float, speed_low: float, speed_up: float, tyre_low: float, tyre_up: float, psg_low: int, psg_up: int, temp_low: float, temp_up: float, hum_low: float, hum_up: float, brake_range: list, engine_range: list, flag_exec: bool, cont_fermate: int):
     flag = True
@@ -250,6 +324,39 @@ def test_costruttore_hybrid(num_autobus: int, ranges: dict, timeout: float, host
 
     return flag
 
+# Metodo dedicato all'esecuzione dei test UD, TL e ST in modo indipendente dal tipo di motorizzazioe dell'autobus passato
+#   UD --> Updated Data
+#   TL --> Threshold List
+#   ST --> Static Threshold
+def call_UDTLST_tests(autobus: AutobusTermico | AutobusIbrido | AutobusElettrico):
+    stat_thres_greater = 80.0
+    stat_thres_lower = 50.0
+    stat_thres_equal = 75.0
+
+    flag_gud = test_get_updated_data(autobus)
+    flag_sud = test_set_updated_data(autobus)
+    flag_gtl = test_get_threshold_list(autobus)
+    flag_stl = test_set_threshold_list(autobus)
+    flag_sstg = test_set_static_threshold(autobus, stat_thres_greater)
+    flag_sstl = test_set_static_threshold(autobus, stat_thres_lower)
+    flag_sste = test_set_static_threshold(autobus, stat_thres_equal)
+
+    return flag_gud, flag_sud, flag_gtl, flag_stl, flag_sstg, flag_sstl, flag_sste
+
+# Metodo dedicato alla stampa di report dei test UD, TL e ST in modo indipendente dal tipo di motorizzazioe
+# dell'autobus passato
+#   UD --> Updated Data
+#   TL --> Threshold List
+#   ST --> Static Threshold
+def report_UDTLST_tests(flag_gud, flag_sud, flag_gtl, flag_stl, flag_sstg, flag_sstl, flag_sste):
+    print("\tTest get_updated_data(): " + "SUPERATO" if flag_gud else "NON SUPERATO")
+    print("\tTest set_updated_data(): " + "SUPERATO" if flag_sud else "NON SUPERATO")
+    print("\tTest get_threshold_list(): " + "SUPERATO" if flag_gtl else "NON SUPERATO")
+    print("\tTest set_threshold_list(): " + "SUPERATO" if flag_stl else "NON SUPERATO")
+    print("\tTest set_static_threshold() greater than constructor: " + "SUPERATO" if flag_sstg else "NON SUPERATO")
+    print("\tTest set_static_threshold() lower than constructor: " + "SUPERATO" if flag_sstl else "NON SUPERATO")
+    print("\tTest set_static_threshold() equal to constructor: " + "SUPERATO" if flag_sste else "NON SUPERATO")
+
 
 # Method main() - metodo che consente di eseguire i test progettati
 def main():
@@ -308,8 +415,11 @@ def main():
     host = "localhost"
     # Porta MQTT broker
     port = 1883 
-    # Istanza di autobus necessaria per i test da condurre
+    # Istanze di autobus necessaria per i test da condurre
     autobus = Autobus(ranges=ranges, timeout=delay_mqtt, host=host, port=port)
+    autobus_termico = AutobusTermico(ranges=ranges, timeout=delay_mqtt, host=host, port=port)
+    autobus_ibrido = AutobusIbrido(ranges=ranges, timeout=delay_mqtt, host=host, port=port)
+    autobus_elettrico = AutobusElettrico(ranges=ranges, timeout=delay_mqtt, host=host, port=port)
 
     # Conduzione test
     flag_costruttore = test_costruttore()
@@ -330,7 +440,14 @@ def main():
     flag_long_direction = test_long_direction(autobus)
     flag_f_data = test_set_formatted_data_to_send(autobus)
     flag_sim = test_simulate(autobus, ranges["gps"]["longitude_low"], ranges["gps"]["longitude_up"], ranges["gps"]["latitude_low"], ranges["gps"]["latitude_up"], ranges["speed_low"], ranges["speed_up"], ranges["tyre_pressure_low"], ranges["tyre_pressure_up"], ranges["num_psg_low"], ranges["num_psg_up"], ranges["environmental"]["temp_low"], ranges["environmental"]["temp_up"], ranges["environmental"]["hum_low"], ranges["environmental"]["hum_up"], ranges["brake_status"], ranges["engine_status"], True, 1)
-    flag_costruttore_hybrid = test_costruttore_hybrid(10, ranges, delay_mqtt, host, port)
+    # Attenzione!!! Numero di targhe passato non massimo perché altrimenti non si riesce a condurre altri test dato il numero
+    # limitato di targhe, in ogni caso il test condotto qui è quello di verificare se tutte le targhe assegnate agli autobus
+    # sono differenti l'un l'altra, quindi anche se non si raggiunge saturazione va bene lo stesso anche condotto su un numero
+    # minore di autobus
+    flag_costruttore_hybrid = test_costruttore_hybrid(9, ranges, delay_mqtt, host, port)
+    flag_gud_t, flag_sud_t, flag_gtl_t, flag_stl_t, flag_sstg_t, flag_sstl_t, flag_sste_t = call_UDTLST_tests(autobus_termico)
+    flag_gud_i, flag_sud_i, flag_gtl_i, flag_sthl_i, flag_sstg_i, flag_sstl_i, flag_sste_i = call_UDTLST_tests(autobus_ibrido)
+    flag_gud_e, flag_sud_e, flag_gtl_e, flag_sthl_e, flag_sstg_e, flag_sstl_e, flag_sste_e = call_UDTLST_tests(autobus_elettrico)
 
     # Reporting test
     print("Reporting test condotti:")
@@ -353,6 +470,12 @@ def main():
     print("\tTest set_formatted_data_to_send(): " + "SUPERATO" if flag_f_data else "NON SUPERATO")
     print("\tTest simulate(): " + "SUPERATO" if flag_sim else "NON SUPERATO")
     print("\tTest costruttore hybrid: " + "SUPERATO" if flag_costruttore_hybrid else "NON SUPERATO")
+    print("\tTermico")
+    report_UDTLST_tests(flag_gud_t, flag_sud_t, flag_gtl_t, flag_stl_t, flag_sstg_t, flag_sstl_t, flag_sste_t)
+    print("\tIbrido")
+    report_UDTLST_tests(flag_gud_i, flag_sud_i, flag_gtl_i, flag_sthl_i, flag_sstg_i, flag_sstl_i, flag_sste_i)
+    print("\tElettrico")
+    report_UDTLST_tests(flag_gud_e, flag_sud_e, flag_gtl_e, flag_sthl_e, flag_sstg_e, flag_sstl_e, flag_sste_e)
 
     # Reporting test semantica set_lat_direction() e set_long_direction()
     autobus.set_lat_direction("nord")
