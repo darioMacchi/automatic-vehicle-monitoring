@@ -9,10 +9,16 @@ from kafka.errors import NoBrokersAvailable
 def signal_handler(sig_num: int, frame):
     sig_name = signal.Signals(sig_num).name
 
+    close_timeout = 5000
+
     # Chiusura consumer
-    consumer.close()
-    print(f"\nEsecuzione consumer interrotta dal segnale {sig_name}")
-    exit(0)
+    try:
+        consumer.close(timeout_ms=close_timeout)
+    except Exception:
+        print("Errore! Cessazione connessione al broker Kafka fallita")
+    finally:
+        print(f"\nEsecuzione consumer interrotta dal segnale {sig_name}")
+        exit(0)
 
 # Installazione handler del segnale CTRL+C
 signal.signal(signalnum=signal.SIGINT, handler=signal_handler)

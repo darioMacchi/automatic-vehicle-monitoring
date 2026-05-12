@@ -256,12 +256,26 @@ class BridgeMQTTKafka:
     # graceful disconnection viene eseguito il metodo disconnect(.) per la disconnessione dal broker MQTT e la chiusura
     # del consumer Kafka con il metodo close(.), inoltre viene stampato a video un mesaggio di informazione
     def stop_bridge(self):
+        close_timeout = 5
+        flush_timeout = 2.5
+
         # Disconnessione dal broker MQTT
         err = self.get_mqtt_client().disconnect()
         # Chiusura consumer Kafka
-        self.get_kafka_client().close()
-        print(f"\nConnessione al broker Kafka interrotta, e connessione al broker MQTT cessata con ", end="")
-        print("successo\n" if err == MQTTErrorCode.MQTT_ERR_SUCCESS else "insuccesso\n")
+        try:
+            self.get_kafka_client().flush(timeout=flush_timeout)
+        except Exception:
+            print("Errore! Flush fallito")
+        finally:
+            try:
+                self.get_kafka_client().close(timeout=close_timeout)
+            except Exception:
+                print(f"\nCessazione connessione al broker Kafka fallita, e connessione al broker MQTT cessata con ", end="")
+                print("successo\n" if err == MQTTErrorCode.MQTT_ERR_SUCCESS else "insuccesso\n")
+            else:
+                print(f"\nConnessione al broker Kafka interrotta, e connessione al broker MQTT cessata con ", end="")
+                print("successo\n" if err == MQTTErrorCode.MQTT_ERR_SUCCESS else "insuccesso\n")
+
 
 # Check CMD Line Arguments - verifica dei parametri passati da linea di comando, in particolare relativi a host e porta
 # del broker MQTT e del broker Kafka; per entrambi gli host viene controllato solamente se l'indirizzo è una stringa
