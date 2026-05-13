@@ -28,6 +28,9 @@ def check_cmd_line_args(topics: list[str], servers: list[str]):
     
     # Servers
     for server in servers:
+        # Rimozione eventuali blank spaces
+        server = server.replace(" ", "")
+
         try:
             # Controllo formato stringa broker strettamente del tipo 'host:porta'
             broker, porta = server.split(":")
