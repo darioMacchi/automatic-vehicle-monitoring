@@ -10,8 +10,9 @@ from kafka.errors import (KafkaError, NoBrokersAvailable,
                           TopicAlreadyExistsError)
 
 
-# 
+# Oggetto Consumer Kafka
 consumer = None
+# Oggetto AdminClient Kafka
 admin = None
 
 
@@ -19,6 +20,8 @@ admin = None
 def signal_handler(sig_num: int, frame):
     sig_name = signal.Signals(sig_num).name
 
+    # Utilizzo degli oggetti globali Consumer e AdminClient Kafka per accedere alle istanze creata e agire su di esse per
+    # una 'graceful disconnection'
     global consumer
     global admin
 
@@ -35,9 +38,9 @@ def signal_handler(sig_num: int, frame):
         print(f"\nEsecuzione consumer interrotta dal segnale {sig_name}")
         sys.exit(0)
 
-# Metodo dedito alla creazione dei topic con i parametri desiderati, ossia per fare in modo che il topic sia gestito
-# tra più broker Kafka, con un certo grado di partizione, replica e repliche in-sync (ISR). Verifica se il topic è già
-# presente nel cluster, altrimenti si incarica della creazione
+# Method create_topics_if_not_exist(., ., ., ., .) - dedito alla creazione dei topic con i parametri desiderati, ossia per
+# fare in modo che il topic sia gestito tra più broker Kafka, con un certo grado di partizione, replica e repliche in-sync
+# (ISR). Verifica se il topic è già presente nel cluster, altrimenti si incarica della creazione
 def create_topics_if_not_exist(admin: KafkaAdminClient, topics: list[str], partitions=1, replication=1, min_insync_replicas=1):
     try:
         # Acquisizione topic presenti nel cluster
@@ -46,7 +49,7 @@ def create_topics_if_not_exist(admin: KafkaAdminClient, topics: list[str], parti
         sys.stderr.write("Errore! Impossibile ottenere il listato dei topic presenti nel cluster\n")
         sys.exit(-7)
 
-    # 
+    # Inizializzazione lista contenente i topic da creare
     new_topics = []
 
     # Per ogni topic presente all'interno della lista di topic da creare passata alla funzione, se non è già presente
@@ -69,10 +72,11 @@ def create_topics_if_not_exist(admin: KafkaAdminClient, topics: list[str], parti
                 }
             )
 
+            # Aggiunta del topic da creare nella lista contenente questi ultimi
             new_topics.append(topic_to_create)
 
     try:
-        # Creazione del topic all'interno del cluster
+        # Creazione dei topic all'interno del cluster
         admin.create_topics(new_topics=new_topics)
     except TopicAlreadyExistsError:
         sys.stderr.write("Errore! Impossibile creare un topic che esiste già nel cluster\n")
@@ -81,21 +85,31 @@ def create_topics_if_not_exist(admin: KafkaAdminClient, topics: list[str], parti
         sys.stderr.write("Errore!\n")
         sys.exit(-9)
     else:
-        # 
+        # Scorrimento lista topic da creare per verificare quali topic sono stati creati tra i tre prestabiliti,
+        # ossia:
+        #   --> AVM.telemetry.autobus.termic
+        #   --> AVM.telemetry.autobus.hybrid
+        #   --> AVM.telemetry.autobus.electric
         for topic in topics:
-            # 
-            if topic in new_topics:
+            # Verifica che il topic non sia già stato creato, e quindi presente nel cluster, in questo caso è 
+            # effettivamente stato creato
+            if topic not in topics_created:
                 print(f"Topic '{topic}' creato")
             else:
                 # Topic già presente nel cluster, per cui non viene fatta nessuna azione riguardante quest'ultimo
                 print(f"Topic '{topic}' già presente nel cluster")
 
-# 
+# Method consumer_admin_setup(.) - dedito alla configurazione e istanziazione degli oggetti Consumer e AdminClient, e
+# subscription ai topic di interesse per l'oggetto Consumer. Viene integrata una logica per quanto riguarda gli ID degli
+# oggetti creati per assicurare che questi abbiano un identificativo univoco nel caso vengano lanciati più processi in cui
+# esegue lo script. Avviene inoltre la creazione dei topic solamente se assenti dal cluster, questo è il motivo
+# dell'utilizzo dell'oggetto AdminClient di Kafka
 def consumer_admin_setup(brokers_kafka: list[str]):
     topics_to_subscribe = ["AVM.telemetry.autobus.termic",
                           "AVM.telemetry.autobus.hybrid",
                           "AVM.telemetry.autobus.electric"]
 
+    # Setup parametri di configurazione topics
     partitions = 2
     replication = 3
     min_insyinc_replicas = 2
@@ -124,15 +138,31 @@ def consumer_admin_setup(brokers_kafka: list[str]):
         print("Errore! Nessun broker disponibile per la connessione")
         sys.exit(-6)
     else:
-        # 
+        # Creazione dei topic di interesse nel momento in cui non sono presenti nel cluster
         create_topics_if_not_exist(admin=admin, topics=topics_to_subscribe, partitions=partitions, replication=replication, min_insync_replicas=min_insyinc_replicas)
 
         # Subscription ai topic di interesse
         consumer.subscribe(topics=topics_to_subscribe)
 
+        # Stampa a video delle subscription dell'oggetto Consumer
+        print("\nSubscriptions:")
+        subs = consumer.subscription()
+        for sub in subs:
+            print(f"\t{sub}")
+
         return consumer, admin
 
-# 
+# Method process_messages(.) - processamento di ogni messaggio che viene ricevuto dall'oggetto Consumer Kafka, il ciclo
+# contenuto all'interno del metodo consente di rimanere in esecuzione indefinitamente fino all'arrivo di un segnale di
+# interrupt, ossia una volta chiamato il metodo l'esecuzione rimarrà bloccata all'interno del ciclo in attesa di nuovi
+# messaggi per il Consumer Kafka, nel momento in cui arriva un messaggio vengono mostrate a video alcune informazioni
+# relative al messaggio:
+#   --> topic di appartenenza
+#   --> partizione di appartenenza
+#   --> offset a cui è presente il messaggio all'interno della partizione di appartenenza
+#   --> timestamp di memorizzazione del messaggio nel log da parte del broker Kafka
+#   --> payload del messaggio ricevuto
+#   --> headers del messaggio ricevuto
 def process_messages(consumer: KafkaConsumer):
     # Elaborazione messaggio
     for msg in consumer:
@@ -142,7 +172,7 @@ def process_messages(consumer: KafkaConsumer):
         print(f"Topic: {msg.topic}")
         print(f"Partition: {msg.partition}")
         print(f"Offset: {msg.offset}")
-        print(f"Timestamp: {msg.timestamp}")
+        print(f"Timestamp: {msg.timestamp / 1000.0}")
         print(f"Payload: {payload}")
         print(f"Headers:")
         print(f"\t{msg.headers[0][0]}: {msg.headers[0][1].decode()}\n")
@@ -194,25 +224,29 @@ def check_cmd_line_args(brokers_kafka: list[str]):
 
     return kafka_brokers
 
-# 
+# Method main() - consente di controllare gli argomenti passati da linea di comando (CLI), ed eseguire il setup degli 
+# oggetti Consumer e AdminClient Kafka. Successivamente avviene l'elaborazione dei messaggi ricevuti dall'oggetto 
+# Consumer Kafka
 def main():
+    # Verifica corretta invocazione del programma
     if len(sys.argv) < 2 or len(sys.argv) > 4:
         sys.stderr.write(f"Errore! Uso corretto del programma: python[3] {sys.argv[0]} host_kafka-1:porta_kafka-1 [host_kafka-2:porta_kafka-2 host_kafka-3:porta_kafka-3]\n")
         sys.stderr.write("\t$host_kafka-* = 'host_Kafka_broker'\n")
         sys.stderr.write("\t$porta_kafka-* = '9092 | 9094 | 9096'\n")
         sys.exit(-1)
 
-    # 
+    # Verifica validità indirizzo broker MQTT e indirizzi broker Kafka
     brokers_kafka = check_cmd_line_args(brokers_kafka=sys.argv[1:].copy())
 
     # Installazione handler del segnale CTRL+C
     signal.signal(signalnum=signal.SIGINT, handler=signal_handler)
 
-    # 
+    # Utilizzo dell'oggetto globale Consumer Kafka
     global consumer
+    # Utilizzo dell'oggetto globale AdminClient Kafka
     global admin
 
-    # 
+    # Setup oggetti Consumer e AdminClient Kafka (istanziazione, configurazione e iscrizione ai topic di interesse)
     consumer, admin = consumer_admin_setup(brokers_kafka=brokers_kafka)
 
     print("\nConsumer in esecuzione...\n")
@@ -221,5 +255,5 @@ def main():
     process_messages(consumer=consumer)
 
 
-if __name__ == "main":
+if __name__ == "__main__":
     main()
