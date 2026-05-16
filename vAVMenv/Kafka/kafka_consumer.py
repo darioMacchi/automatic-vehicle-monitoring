@@ -172,7 +172,7 @@ def process_messages(consumer: KafkaConsumer):
         print(f"Topic: {msg.topic}")
         print(f"Partition: {msg.partition}")
         print(f"Offset: {msg.offset}")
-        print(f"Timestamp: {msg.timestamp / 1000.0}")
+        print(f"Timestamp: {msg.timestamp / 1000.00}")
         print(f"Payload: {payload}")
         print(f"Headers:")
         print(f"\t{msg.headers[0][0]}: {msg.headers[0][1].decode()}\n")
