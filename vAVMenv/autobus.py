@@ -73,14 +73,14 @@ class Autobus:
         self._formatted_data_to_send = ""
 
         # Client, timeout, host e porta MQTT
-        self._mqtt_client = self.setup_mqtt()
+        self._mqtt_client = self._setup_mqtt()
         self._timeout = timeout
         self._host = host
         self._port = port
     
     # on_connect - callback necessaria per il protocollo di comunicazione MQTT per gestire il momento in cui 
     # il client riceve una risposta CONNACK dal server (broker RabbitMQ) - firma prestabilita
-    def on_connect(self, client, userdata, flags: mqtt.ConnectFlags, reason_code: mqttrc.ReasonCode, properties):
+    def _on_connect(self, client, userdata, flags: mqtt.ConnectFlags, reason_code: mqttrc.ReasonCode, properties):
         if reason_code.is_failure:
             print(f"Fallimento connessione: {reason_code}. loop_start() proverà a riconnettersi\n")
         else:
@@ -90,19 +90,19 @@ class Autobus:
 
     # on_connect_fail - callback necessaria per il protocollo di comunicazione MQTT per gestire il momento in cui
     # avviene il fallimento nello stabilire una connessione automatica da parte di loop_start()
-    def on_connect_fail(self, client, userdata):
+    def _on_connect_fail(self, client, userdata):
         print("Fallito stabilimento della (ri)connessione TCP automatica verso il broker da parte di loop_start()")
 
     # Setup MQTT - metodo necessario alla creazione del client MQTT specificando versione delle callback, client_id 
     # (modificato dalle sottoclassi) e sessione pulita (ossia non persistente). Vengono inoltre specificate le relative
     # callback necessarie ai fini di corretta gestione di connessione e fallimento alla riconessione automatica
-    def setup_mqtt(self):
+    def _setup_mqtt(self):
         client_id = "autobus_"
 
         # Setup client MQTT
         mqttc = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2, client_id=client_id, clean_session=True)
-        mqttc.on_connect = self.on_connect
-        mqttc.on_connect_fail = self.on_connect_fail
+        mqttc.on_connect = self._on_connect
+        mqttc.on_connect_fail = self._on_connect_fail
 
         return mqttc
 
