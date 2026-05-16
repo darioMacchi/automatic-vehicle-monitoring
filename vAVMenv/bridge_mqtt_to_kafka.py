@@ -9,7 +9,7 @@ import paho.mqtt.client as mqtt
 import paho.mqtt.reasoncodes as mqttrc
 from kafka import KafkaProducer
 from kafka.admin import KafkaAdminClient, NewTopic
-from kafka.errors import (KafkaError, NoBrokersAvailable,
+from kafka.errors import (KafkaError, KafkaTimeoutError, NoBrokersAvailable,
                           TopicAlreadyExistsError)
 from paho.mqtt.enums import MQTTErrorCode
 
@@ -55,12 +55,15 @@ class BridgeMQTTKafka:
     # e sessione persistente. Vengono inoltre specificate le relative callback necessarie ai fini di corretta gestione
     # di connessione, fallimento alla riconessione automatica, subscription e ricezione di un messaggio
     def _setup_mqtt(self):
+        # Preparazione client_id per consumer MQTT
+        consumer_client_id = f"AVM_telemetry_consumer"
+
         # Setup client MQTT
-        mqttc = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2, client_id="AVM_telemetry_consumer", clean_session=False)
-        mqttc.on_connect = self.on_connect
-        mqttc.on_connect_fail = self.on_connect_fail
-        mqttc.on_subscribe = self.on_subscribe
-        mqttc.on_message = self.on_message
+        mqttc = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2, client_id=consumer_client_id, clean_session=False)
+        mqttc.on_connect = self._on_connect
+        mqttc.on_connect_fail = self._on_connect_fail
+        mqttc.on_subscribe = self._on_subscribe
+        mqttc.on_message = self._on_message
         mqttc.user_data_set({})
 
         # Inizializzazione var per contenere return value della connessione al broker MQTT
@@ -201,7 +204,7 @@ class BridgeMQTTKafka:
 
     # on_subscribe - callback necessaria per il protocollo di comunicazione MQTT per gestire il momento in cui
     # il client riceve una risposta SUBACK dal broker
-    def on_subscribe(self, client, userdata, mid, reason_code_list: list[mqttrc.ReasonCodes], properties):
+    def _on_subscribe(self, client, userdata, mid, reason_code_list: list[mqttrc.ReasonCodes], properties):
         # Dato che la subscription è multipla (a più topic), reason_code_list contiene
         # più entry
         if reason_code_list[0].is_failure:
@@ -214,35 +217,39 @@ class BridgeMQTTKafka:
             print(f"Il broker ha messo a disposizione la seguente QoS:")
             print(f"\tAVM/telemetry/autobus/termic : {reason_code_list[0].value}")
             print(f"\tAVM/telemetry/autobus/hybrid : {reason_code_list[1].value}")
-            print(f"\tAVM/telemetry/autobus/electric : {reason_code_list[2].value}")
+            print(f"\tAVM/telemetry/autobus/electric : {reason_code_list[2].value}\n")
 
     # on_connect - callback necessaria per il protocollo di comunicazione MQTT per gestire il momento in cui 
     # il client riceve una risposta CONNACK dal server (broker RabbitMQ) - firma prestabilita
-    def on_connect(self, client: mqtt.Client, userdata, flags: mqtt.ConnectFlags, reason_code: mqttrc.ReasonCode, properties):
+    def _on_connect(self, client: mqtt.Client, userdata, flags: mqtt.ConnectFlags, reason_code: mqttrc.ReasonCode, properties):
         if reason_code.is_failure:
             print(f"\nFallimento connessione: {reason_code}. loop_forever() proverà a riconnettersi\n")
         else:
             print(f"\nConnessione con result code {reason_code}")
             print("Il broker detiene ancora informazioni per il client: ", end="")
-            print("SI" if flags.session_present else "NO")
+            if flags.session_present:
+                print("SI (Persistent Session Attiva)\n")
+            else:
+                print("NO")
 
-            # Iscrizione ai topic all'interno della callback on_connect() implica che se la connessione viene persa e
-            # viene effettuata la riconnessione, allora le iscrizioni saranno effettuate di nuovo. Questo assicura che le
-            # iscrizioni siano persistenti alle riconnessioni
-            client.subscribe(topic=[("AVM/telemetry/autobus/termic", 1), ("AVM/telemetry/autobus/hybrid", 1), ("AVM/telemetry/autobus/electric", 1)])
+                # Iscrizione ai topic all'interno della callback on_connect() implica che se la connessione viene persa e
+                # viene effettuata la riconnessione, allora le iscrizioni saranno effettuate di nuovo. Questo assicura che le
+                # iscrizioni siano persistenti alle riconnessioni
+                client.subscribe(topic=[("AVM/telemetry/autobus/termic", 1), ("AVM/telemetry/autobus/hybrid", 1), ("AVM/telemetry/autobus/electric", 1)])
 
     # on_connect_fail - callback necessaria per il protocollo di comunicazione MQTT per gestire il momento in cui
     # avviene il fallimento nello stabilire una connessione automatica da parte di loop_forever()
-    def on_connect_fail(self, client, userdata):
+    def _on_connect_fail(self, client, userdata):
         print("Fallito stabilimento della (ri)connessione TCP automatica verso il broker da parte di loop_forever()")
 
-    # -- VERIFICA FUNZIONAMENTO --
     # on_message - callback necessaria per il protocollo di comunicazione MQTT per gestire il momento in cui 
     # un messaggio PUBLISH viene ricevuto dal server
-    def on_message(self, client: mqtt.Client, userdata: dict, msg: mqtt.MQTTMessage):
+    def _on_message(self, client: mqtt.Client, userdata: dict, msg: mqtt.MQTTMessage):
         # Converisone MQTT topic a Kafka topic (rimpiazzo / con .)
         kafka_topic = msg.topic.replace("/", ".")
         payload = json.loads(msg.payload.decode())
+        # TODO
+        # Rivedere dimensionamento 
         last = 30
 
         # Creazione del topic nel cluster Kafka con i parametri di config appropriati
@@ -250,7 +257,7 @@ class BridgeMQTTKafka:
 
         # Verifica messaggio duplicato
         if msg.dup:
-            print("Gestione duplicato")
+            print(f"Gestione duplicato, DUP flag: {msg.dup}")
 
             # Se il messaggio duplicato non è presente nel dizionario degli ultimi 'last' messaggi, allora non è stato
             # elaborato
@@ -274,9 +281,19 @@ class BridgeMQTTKafka:
                 # Invio del messaggio verso il broker Kafka con inclusione degli header per indicare l'encoding del
                 # contenuto
                 future = self.get_kafka_client().send(topic=kafka_topic, value=msg.payload, headers=[("content-encoding", b"JSON")])
-                # Attesa dell'effettivo invio del messaggio
-                result = future.get(timeout=60)
-                print(f"\nMessaggio inoltrato dal topic MQTT {msg.topic} al topic Kafka {kafka_topic}, con offset {result.offset}\n")
+                try:
+                    # Attesa dell'effettivo invio del messaggio
+                    result = future.get(timeout=60)
+                except KafkaTimeoutError:
+                    sys.stderr.write("\nErrore! Fallita attesa dell'effettivo invio del messaggio, timeout scaduto\n")
+                except KafkaError:
+                    sys.stderr.write("\nErrore! Fallita attesa dell'effettivo invio del messaggio\n")
+                else:
+                    print(f"\nMessaggio inoltrato dal topic MQTT {msg.topic} al topic Kafka {kafka_topic}, con offset {result.offset}\n")
+            else:
+                # Il messaggio duplicato è presente nel dizionario degli ultimi 'last' messaggi, quindi è già stato
+                # elaborato
+                print(f"Messaggio già processato e inoltrato dal topic MQTT {msg.topic} al topic Kafka {kafka_topic}\n")
         # Messaggio originale
         else:
             # Verifica lunghezza dizionario
@@ -298,9 +315,15 @@ class BridgeMQTTKafka:
             # Invio del messaggio verso il broker Kafka con inclusione degli header per indicare l'encoding del
             # contenuto
             future = self.get_kafka_client().send(topic=kafka_topic, value=msg.payload, headers=[("content-encoding", b"JSON")])
-            # Attesa dell'effettivo invio del messaggio
-            result = future.get(timeout=60)
-            print(f"\nMessaggio inoltrato dal topic MQTT {msg.topic} al topic Kafka {kafka_topic}, con offset {result.offset}\n")
+            try:
+                # Attesa dell'effettivo invio del messaggio
+                result = future.get(timeout=60)
+            except KafkaTimeoutError:
+                    sys.stderr.write("\nErrore! Fallita attesa dell'effettivo invio del messaggio, timeout scaduto\n")
+            except KafkaError:
+                sys.stderr.write("\nErrore! Fallita attesa dell'effettivo invio del messaggio\n")
+            else:
+                print(f"\nMessaggio inoltrato dal topic MQTT {msg.topic} al topic Kafka {kafka_topic}, con offset {result.offset}\n")
 
     # Stop method - prevede lo stop del bridge a seguito della ricezione di un segnale SIGINT (CTRL+C), per una 
     # graceful disconnection viene eseguito il metodo disconnect(.) per la disconnessione dal broker MQTT, la chiusura
