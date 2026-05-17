@@ -73,14 +73,14 @@ class Autobus:
         self._formatted_data_to_send = ""
 
         # Client, timeout, host e porta MQTT
-        self._mqtt_client = self.setup_mqtt()
+        self._mqtt_client = self._setup_mqtt()
         self._timeout = timeout
         self._host = host
         self._port = port
     
     # on_connect - callback necessaria per il protocollo di comunicazione MQTT per gestire il momento in cui 
     # il client riceve una risposta CONNACK dal server (broker RabbitMQ) - firma prestabilita
-    def on_connect(self, client, userdata, flags: mqtt.ConnectFlags, reason_code: mqttrc.ReasonCode, properties):
+    def _on_connect(self, client, userdata, flags: mqtt.ConnectFlags, reason_code: mqttrc.ReasonCode, properties):
         if reason_code.is_failure:
             print(f"Fallimento connessione: {reason_code}. loop_start() proverà a riconnettersi\n")
         else:
@@ -90,19 +90,19 @@ class Autobus:
 
     # on_connect_fail - callback necessaria per il protocollo di comunicazione MQTT per gestire il momento in cui
     # avviene il fallimento nello stabilire una connessione automatica da parte di loop_start()
-    def on_connect_fail(self, client, userdata):
+    def _on_connect_fail(self, client, userdata):
         print("Fallito stabilimento della (ri)connessione TCP automatica verso il broker da parte di loop_start()")
 
     # Setup MQTT - metodo necessario alla creazione del client MQTT specificando versione delle callback, client_id 
     # (modificato dalle sottoclassi) e sessione pulita (ossia non persistente). Vengono inoltre specificate le relative
     # callback necessarie ai fini di corretta gestione di connessione e fallimento alla riconessione automatica
-    def setup_mqtt(self):
+    def _setup_mqtt(self):
         client_id = "autobus_"
 
         # Setup client MQTT
         mqttc = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2, client_id=client_id, clean_session=True)
-        mqttc.on_connect = self.on_connect
-        mqttc.on_connect_fail = self.on_connect_fail
+        mqttc.on_connect = self._on_connect
+        mqttc.on_connect_fail = self._on_connect_fail
 
         return mqttc
 
@@ -423,18 +423,21 @@ class Autobus:
             # Finché lo spostamento avviene in una direzione e il limite massimo non viene superato si continua ad
             # aggiungere o sottrarre, nel momento in cui il limite massimo viene superato si inverte la direzione e 
             # l'operazione di addizione o sottrazione
-            if self.get_lat_direction() == "NORD" and round(prec_latitude + lat_span, 5) <= self._ranges["gps"]["latitude_up"]:
+            if self.get_lat_direction() == "NORD" and round(prec_latitude + lat_span, 5) <= self._ranges["gps"]["latitude_up"] and round(prec_latitude + lat_span, 5) >= self._ranges["gps"]["latitude_low"]:
                 new_lat = round(prec_latitude + lat_span, 5)
-            elif self.get_lat_direction() == "NORD" and round(prec_latitude + lat_span, 5) > self._ranges["gps"]["latitude_up"]:
+            elif self.get_lat_direction() == "NORD" and round(prec_latitude + lat_span, 5) > self._ranges["gps"]["latitude_up"] and round(prec_latitude + lat_span, 5) >= self._ranges["gps"]["latitude_low"]:
                 self.set_lat_direction("SUD")
                 new_lat = round(prec_latitude - lat_span, 5)
-            elif self.get_lat_direction() == "SUD" and round(prec_latitude - lat_span, 5) >= self._ranges["gps"]["latitude_low"]:
+            elif self.get_lat_direction() == "SUD" and round(prec_latitude - lat_span, 5) >= self._ranges["gps"]["latitude_low"] and round(prec_latitude - lat_span, 5) <= self._ranges["gps"]["latitude_up"]:
                 new_lat = round(prec_latitude - lat_span, 5)
-            elif self.get_lat_direction() == "SUD" and round(prec_latitude - lat_span, 5) < self._ranges["gps"]["latitude_low"]:
+            elif self.get_lat_direction() == "SUD" and round(prec_latitude - lat_span, 5) < self._ranges["gps"]["latitude_low"] and round(prec_latitude - lat_span, 5) <= self._ranges["gps"]["latitude_up"]:
                 self.set_lat_direction("NORD")
                 new_lat = round(prec_latitude + lat_span, 5)
             else:
-                sys.stderr.write("Errore! Ripristino latitudine al punto di partenza")
+                # Alternativa prevista nel caso in cui venga utilizzato l'oggetto con chiamata unica al metodo e non
+                # all'interno di un ciclo come nell'utilizzo previsto, per cui nel caso in cui i metodi vengano utilizzati
+                # come una sorta di API. Per questo stesso motivo è stata aggiunta la condizione che riguarda l'estremo opposto
+                # , ossia quella di essere effettivamente all'interno del range
                 new_lat = self._ranges["gps"]["latitude_low"]
 
             self.set_latitude(new_lat)
@@ -445,18 +448,21 @@ class Autobus:
             # Finché lo spostamento avviene in una direzione e il limite massimo non viene superato si continua ad
             # aggiungere o sottrarre, nel momento in cui il limite massimo viene superato si inverte la direzione e 
             # l'operazione di addizione o sottrazione
-            if self.get_long_direction() == "EST" and round(prec_longitude + long_span, 5) <= self._ranges["gps"]["longitude_up"]:
+            if self.get_long_direction() == "EST" and round(prec_longitude + long_span, 5) <= self._ranges["gps"]["longitude_up"] and round(prec_longitude + long_span, 5) >= self._ranges["gps"]["longitude_low"]:
                 new_long = round(prec_longitude + long_span, 5)
-            elif self.get_long_direction() == "EST" and round(prec_longitude + long_span, 5) > self._ranges["gps"]["longitude_up"]:
+            elif self.get_long_direction() == "EST" and round(prec_longitude + long_span, 5) > self._ranges["gps"]["longitude_up"] and round(prec_longitude + long_span, 5) >= self._ranges["gps"]["longitude_low"]:
                 self.set_long_direction("OVEST")
                 new_long = round(prec_longitude - long_span, 5)
-            elif self.get_long_direction() == "OVEST" and round(prec_longitude - long_span, 5) >= self._ranges["gps"]["longitude_low"]:
+            elif self.get_long_direction() == "OVEST" and round(prec_longitude - long_span, 5) >= self._ranges["gps"]["longitude_low"] and round(prec_longitude - long_span, 5) <= self._ranges["gps"]["longitude_up"]:
                 new_long = round(prec_longitude - long_span, 5)
-            elif self.get_long_direction() == "OVEST" and round(prec_longitude - long_span, 5) < self._ranges["gps"]["longitude_low"]:
+            elif self.get_long_direction() == "OVEST" and round(prec_longitude - long_span, 5) < self._ranges["gps"]["longitude_low"] and round(prec_longitude - long_span, 5) <= self._ranges["gps"]["longitude_up"]:
                 self.set_long_direction("EST")
                 new_long = round(prec_longitude + long_span, 5)
             else:
-                sys.stderr.write("Errore! Ripristino longitudine al punto di partenza")
+                # Alternativa prevista nel caso in cui venga utilizzato l'oggetto con chiamata unica al metodo e non
+                # all'interno di un ciclo come nell'utilizzo previsto, per cui nel caso in cui i metodi vengano utilizzati
+                # come una sorta di API. Per questo stesso motivo è stata aggiunta la condizione che riguarda l'estremo opposto
+                # , ossia quella di essere effettivamente all'interno del range
                 new_long = self._ranges["gps"]["longitude_low"]
 
             self.set_longitude(new_long)
@@ -469,23 +475,23 @@ class Autobus:
             # precedente misura di velocità
             if new_speed not in np.arange(prec_speed - speed_span, prec_speed + speed_span + 0.1, 0.1):
 
-                # -- ERRORE --
-                # Nel momento in cui il limite inferiore è uguale e quello superiore è inferiore in realtà il
-                # flusso entra nell'else modificando la simulazione nell'intervallo [prec_speed - speed_span, speed_up],
-                # quando dovrebbe essere in [prec_speed - speed_span || speed_low, prec_speed + speed_span] perché se
-                # sono uguali i limiti inferiori che sia uno o l'altro non fa differenza
-                # -- VERIFICA RISOLUZIONE (ANCHE CON TESTING) --
-
                 # Verifica presenza dell'intervallo [prec_speed - speed_span, prec_speed + speed_span] all'interno
                 # dell'intervallo generale
-                if ( prec_speed - speed_span ) > self._ranges["speed_low"] and ( prec_speed + speed_span ) < self._ranges["speed_up"]:
+                if ( prec_speed - speed_span ) >= self._ranges["speed_low"] and ( prec_speed + speed_span ) <= self._ranges["speed_up"] and ( prec_speed + speed_span ) >= ( prec_speed - speed_span ):
                     self.set_speed( round( random.random() * (( prec_speed + speed_span ) - ( prec_speed - speed_span )) + ( prec_speed - speed_span ), 1 ) )
                 # Verifica uscita dall'intervallo generale dell'estremo inferiore
-                elif ( prec_speed - speed_span ) <= self._ranges["speed_low"] and ( prec_speed + speed_span ) < self._ranges["speed_up"]:
+                elif ( prec_speed - speed_span ) < self._ranges["speed_low"] and ( prec_speed + speed_span ) <= self._ranges["speed_up"] and ( prec_speed + speed_span ) >= self._ranges["speed_low"]:
                     self.set_speed( round( random.random() * (( prec_speed + speed_span ) - self._ranges["speed_low"]) + self._ranges["speed_low"], 1 ) )
                 # Uscita dall'intervallo generale dell'estremo superiore
-                elif ( prec_speed + speed_span ) >= self._ranges["speed_up"] and ( prec_speed - speed_span ) > self._ranges["speed_low"]:
+                elif ( prec_speed + speed_span ) > self._ranges["speed_up"] and ( prec_speed - speed_span ) >= self._ranges["speed_low"] and self._ranges["speed_up"] >= ( prec_speed - speed_span ):
                     self.set_speed( round( random.random() * (self._ranges["speed_up"] - ( prec_speed - speed_span )) + ( prec_speed - speed_span ), 1 ) )
+                else:
+                    # Alternativa prevista nel caso in cui venga utilizzato l'oggetto con chiamata unica al metodo e non
+                    # all'interno di un ciclo come nell'utilizzo previsto, per cui nel caso in cui i metodi vengano utilizzati
+                    # come una sorta di API. Per questo stesso motivo è stata aggiunta la condizione che riguarda i due estremi
+                    # , ossia che l'estremo superiore utilizzato per l'aggiornamento sia effettivamente maggiore o uguale di
+                    # quello inferiore utilizzato nell'aggiornamento
+                    self.set_speed(initial_speed)
 
             else:
                 self.set_speed( new_speed )
@@ -500,14 +506,21 @@ class Autobus:
 
                 # Verifica presenza dell'intervallo [prec_tyre_pressure - tyre_span, prec_tyre_pressure + tyre_span] all'interno
                 # dell'intervallo generale
-                if ( prec_tyre_pressure - tyre_span ) > self._ranges["tyre_pressure_low"] and ( prec_tyre_pressure + tyre_span ) < self._ranges["tyre_pressure_up"]:
+                if ( prec_tyre_pressure - tyre_span ) >= self._ranges["tyre_pressure_low"] and ( prec_tyre_pressure + tyre_span ) <= self._ranges["tyre_pressure_up"] and ( prec_tyre_pressure + tyre_span ) >= ( prec_tyre_pressure - tyre_span ):
                     self.set_tyre_pressure( round( random.random() * (( prec_tyre_pressure + tyre_span ) - ( prec_tyre_pressure - tyre_span )) + ( prec_tyre_pressure - tyre_span ), 2 ) )
                 # Verifica uscita dall'intervallo generale dell'estremo inferiore
-                elif ( prec_tyre_pressure - tyre_span ) < self._ranges["tyre_pressure_low"]:
+                elif ( prec_tyre_pressure - tyre_span ) < self._ranges["tyre_pressure_low"] and ( prec_tyre_pressure + tyre_span ) <= self._ranges["tyre_pressure_up"] and ( prec_tyre_pressure + tyre_span ) >= self._ranges["tyre_pressure_low"]:
                     self.set_tyre_pressure( round( random.random() * (( prec_tyre_pressure + tyre_span ) - self._ranges["tyre_pressure_low"]) + self._ranges["tyre_pressure_low"], 2 ) )
                 # Uscita dall'intervallo generale dell'estremo superiore
-                else:
+                elif ( prec_tyre_pressure + tyre_span ) > self._ranges["tyre_pressure_up"] and ( prec_tyre_pressure - tyre_span ) >= self._ranges["tyre_pressure_low"] and self._ranges["tyre_pressure_up"] >= ( prec_tyre_pressure - tyre_span ):
                     self.set_tyre_pressure( round( random.random() * (self._ranges["tyre_pressure_up"] - ( prec_tyre_pressure - tyre_span )) + ( prec_tyre_pressure - tyre_span ), 2 ) )
+                else:
+                    # Alternativa prevista nel caso in cui venga utilizzato l'oggetto con chiamata unica al metodo e non
+                    # all'interno di un ciclo come nell'utilizzo previsto, per cui nel caso in cui i metodi vengano utilizzati
+                    # come una sorta di API. Per questo stesso motivo è stata aggiunta la condizione che riguarda i due estremi
+                    # , ossia che l'estremo superiore utilizzato per l'aggiornamento sia effettivamente maggiore o uguale di
+                    # quello inferiore utilizzato nell'aggiornamento
+                    self.set_tyre_pressure(self._ranges["tyre_pressure_up"])
 
             else:
                 self.set_tyre_pressure( new_tyre_pressure )
@@ -534,14 +547,21 @@ class Autobus:
 
                     # Verifica presenza dell'intervallo [prec_num_psg - psg_span, prec_num_psg + psg_span] all'interno
                     # dell'intervallo generale
-                    if ( prec_num_psg - psg_span ) > self._ranges["num_psg_low"] and ( prec_num_psg + psg_span ) < self._ranges["num_psg_up"]:
+                    if ( prec_num_psg - psg_span ) >= self._ranges["num_psg_low"] and ( prec_num_psg + psg_span ) <= self._ranges["num_psg_up"] and ( prec_num_psg + psg_span ) >= ( prec_num_psg - psg_span ):
                         self.set_num_psg( random.randrange( (prec_num_psg - psg_span), (prec_num_psg + psg_span) ) )
                     # Verifica uscita dall'intervallo generale dell'estremo inferiore
-                    elif ( prec_num_psg - psg_span ) < self._ranges["num_psg_low"]:
+                    elif ( prec_num_psg - psg_span ) < self._ranges["num_psg_low"] and ( prec_num_psg + psg_span ) <= self._ranges["num_psg_up"] and ( prec_num_psg + psg_span ) >= self._ranges["num_psg_low"]:
                         self.set_num_psg( random.randrange( self._ranges["num_psg_low"], (prec_num_psg + psg_span) ) )
                     # Uscita dall'intervallo generale dell'estremo superiore
-                    else:
+                    elif ( prec_num_psg + psg_span ) > self._ranges["num_psg_up"] and ( prec_num_psg - psg_span ) >= self._ranges["num_psg_low"] and self._ranges["num_psg_up"] >= ( prec_num_psg - psg_span ):
                         self.set_num_psg( random.randrange( (prec_num_psg - psg_span), self._ranges["num_psg_up"] ) )
+                    else:
+                        # Alternativa prevista nel caso in cui venga utilizzato l'oggetto con chiamata unica al metodo e non
+                        # all'interno di un ciclo come nell'utilizzo previsto, per cui nel caso in cui i metodi vengano utilizzati
+                        # come una sorta di API. Per questo stesso motivo è stata aggiunta la condizione che riguarda i due estremi
+                        # , ossia che l'estremo superiore utilizzato per l'aggiornamento sia effettivamente maggiore o uguale di
+                        # quello inferiore utilizzato nell'aggiornamento
+                        self.set_num_psg(initial_num_psg)
 
                 else:
                     self.set_num_psg( new_psg )
@@ -558,14 +578,21 @@ class Autobus:
 
                 # Verifica presenza dell'intervallo [prec_temperature - temp_span, prec_temperature + temp_span] all'interno
                 # dell'intervallo generale
-                if ( prec_temperature - temp_span ) > self._ranges["environmental"]["temp_low"] and ( prec_temperature + temp_span ) < self._ranges["environmental"]["temp_up"]:
+                if ( prec_temperature - temp_span ) >= self._ranges["environmental"]["temp_low"] and ( prec_temperature + temp_span ) <= self._ranges["environmental"]["temp_up"] and ( prec_temperature + temp_span ) >= ( prec_temperature - temp_span ):
                     self.set_temperature( round( random.random() * (( prec_temperature + temp_span ) - ( prec_temperature - temp_span )) + ( prec_temperature - temp_span ), 3 ) )
                 # Verifica uscita dall'intervallo generale dell'estremo inferiore
-                elif ( prec_temperature - temp_span ) < self._ranges["environmental"]["temp_low"]:
+                elif ( prec_temperature - temp_span ) < self._ranges["environmental"]["temp_low"] and ( prec_temperature + temp_span ) <= self._ranges["environmental"]["temp_up"] and ( prec_temperature + temp_span ) >= self._ranges["environmental"]["temp_low"]:
                     self.set_temperature( round( random.random() * (( prec_temperature + temp_span ) - self._ranges["environmental"]["temp_low"]) + self._ranges["environmental"]["temp_low"], 3 ) )
                 # Uscita dall'intervallo generale dell'estremo superiore
-                else:
+                elif ( prec_temperature + temp_span ) > self._ranges["environmental"]["temp_up"] and ( prec_temperature - temp_span ) >= self._ranges["environmental"]["temp_low"] and self._ranges["environmental"]["temp_up"] >= ( prec_temperature - temp_span ):
                     self.set_temperature( round( random.random() * (self._ranges["environmental"]["temp_up"] - ( prec_temperature - temp_span )) + ( prec_temperature - temp_span ), 3 ) )
+                else:
+                    # Alternativa prevista nel caso in cui venga utilizzato l'oggetto con chiamata unica al metodo e non
+                    # all'interno di un ciclo come nell'utilizzo previsto, per cui nel caso in cui i metodi vengano utilizzati
+                    # come una sorta di API. Per questo stesso motivo è stata aggiunta la condizione che riguarda i due estremi
+                    # , ossia che l'estremo superiore utilizzato per l'aggiornamento sia effettivamente maggiore o uguale di
+                    # quello inferiore utilizzato nell'aggiornamento
+                    self.set_temperature( round( random.random() * (self._ranges["environmental"]["temp_up"] - self._ranges["environmental"]["temp_low"]) + self._ranges["environmental"]["temp_low"], 3 ) )
 
             else:
                 self.set_temperature( new_temp )
@@ -580,14 +607,21 @@ class Autobus:
 
                 # Verifica presenza dell'intervallo [prec_humidity - hum_span, prec_humidity + hum_span] all'interno
                 # dell'intervallo generale
-                if ( prec_humidity - hum_span ) > self._ranges["environmental"]["hum_low"] and ( prec_humidity + hum_span ) < self._ranges["environmental"]["hum_up"]:
+                if ( prec_humidity - hum_span ) >= self._ranges["environmental"]["hum_low"] and ( prec_humidity + hum_span ) <= self._ranges["environmental"]["hum_up"] and ( prec_humidity + hum_span ) >= ( prec_humidity - hum_span ):
                     self.set_humidity( round( random.random() * (( prec_humidity + hum_span ) - ( prec_humidity - hum_span )) + ( prec_humidity - hum_span ), 3 ) )
                 # Verifica uscita dall'intervallo generale dell'estremo inferiore
-                elif ( prec_humidity - hum_span ) < self._ranges["environmental"]["hum_low"]:
+                elif ( prec_humidity - hum_span ) < self._ranges["environmental"]["hum_low"] and ( prec_humidity + hum_span ) <= self._ranges["environmental"]["hum_up"] and ( prec_humidity + hum_span ) >= self._ranges["environmental"]["hum_low"]:
                     self.set_humidity( round( random.random() * (( prec_humidity + hum_span ) - self._ranges["environmental"]["hum_low"]) + self._ranges["environmental"]["hum_low"], 3 ) )
                 # Uscita dall'intervallo generale dell'estremo superiore
-                else:
+                elif ( prec_humidity + hum_span ) > self._ranges["environmental"]["hum_up"] and ( prec_humidity - hum_span ) >= self._ranges["environmental"]["hum_low"] and self._ranges["environmental"]["hum_up"] >= ( prec_humidity - hum_span ):
                     self.set_humidity( round( random.random() * (self._ranges["environmental"]["hum_up"] - ( prec_humidity - hum_span )) + ( prec_humidity - hum_span ), 3 ) )
+                else:
+                    # Alternativa prevista nel caso in cui venga utilizzato l'oggetto con chiamata unica al metodo e non
+                    # all'interno di un ciclo come nell'utilizzo previsto, per cui nel caso in cui i metodi vengano utilizzati
+                    # come una sorta di API. Per questo stesso motivo è stata aggiunta la condizione che riguarda i due estremi
+                    # , ossia che l'estremo superiore utilizzato per l'aggiornamento sia effettivamente maggiore o uguale di
+                    # quello inferiore utilizzato nell'aggiornamento
+                    self.set_humidity( round( random.random() * (self._ranges["environmental"]["hum_up"] - self._ranges["environmental"]["hum_low"]) + self._ranges["environmental"]["hum_low"], 3 ) )
 
             else:
                 self.set_humidity( new_hum )
@@ -596,13 +630,24 @@ class Autobus:
             # valore precedente si mantiene un aggiornamento più sensato. Leggera differenza operando su di una lista, si 
             # prende direttamente il valore precedente e si forma una nuova lista da cui pescare random solamente con
             # l'elemento precedente e il successivo e il precedente
-            prec_b_index = self._ranges["brake_status"].index(prec_brake_status)
-            if (prec_b_index - 1) >= 0 and (prec_b_index + 1) < len(self._ranges["brake_status"]):
-                new_brake_list = [self._ranges["brake_status"][prec_b_index - 1], prec_brake_status, self._ranges["brake_status"][prec_b_index + 1]]
-            elif (prec_b_index - 1) < 0:
-                new_brake_list = [prec_brake_status, self._ranges["brake_status"][prec_b_index + 1]]
-            elif (prec_b_index + 1) >= len(self._ranges["brake_status"]):
-                new_brake_list = [self._ranges["brake_status"][prec_b_index - 1], prec_brake_status]
+            new_brake_list = []
+
+            # Verifica che la stringa precedente sia non vuota, questo per assicurare che l'utilizzo avvenga all'interno di un
+            # ciclo, come da utilizzo inteso dell'oggetto
+            if prec_brake_status != "":
+                prec_b_index = self._ranges["brake_status"].index(prec_brake_status)
+                if (prec_b_index - 1) >= 0 and (prec_b_index + 1) < len(self._ranges["brake_status"]):
+                    new_brake_list = [self._ranges["brake_status"][prec_b_index - 1], prec_brake_status, self._ranges["brake_status"][prec_b_index + 1]]
+                elif (prec_b_index - 1) < 0:
+                    new_brake_list = [prec_brake_status, self._ranges["brake_status"][prec_b_index + 1]]
+                elif (prec_b_index + 1) >= len(self._ranges["brake_status"]):
+                    new_brake_list = [self._ranges["brake_status"][prec_b_index - 1], prec_brake_status]
+            else:
+                # Alternativa prevista nel caso in cui venga utilizzato l'oggetto con chiamata unica al metodo e non
+                # all'interno di un ciclo come nell'utilizzo previsto, per cui nel caso in cui i metodi vengano utilizzati
+                # come una sorta di API. Per questo stesso motivo è stata aggiunta la verifica sulla stringa precedente
+                # , ossia che sia non vuota per prevenire eventuali errori indesiderati
+                new_brake_list = [self._ranges["brake_status"][-3], self._ranges["brake_status"][-2], self._ranges["brake_status"][-1]]
             
             self.set_brake_status(random.choice(new_brake_list))
 
@@ -610,14 +655,25 @@ class Autobus:
             # precedente si mantiene un aggiornamento più sensato. Leggera differenza operando su di una lista, si prende
             # direttamente il valore precedente e si forma una nuova lista da cui pescare random solamente con l'elemento
             # precedente e il successivo e il precedente
-            prec_e_index = self._ranges["engine_status"].index(prec_engine_status)
-            if (prec_e_index - 1) >= 0 and (prec_e_index + 1) < len(self._ranges["engine_status"]):
-                new_engine_list = [self._ranges["engine_status"][prec_e_index - 1], prec_engine_status, self._ranges["engine_status"][prec_e_index + 1]]
-            elif (prec_e_index - 1) < 0:
-                new_engine_list = [prec_engine_status, self._ranges["engine_status"][prec_e_index + 1]]
-            elif (prec_e_index + 1) >= len(self._ranges["engine_status"]):
-                new_engine_list = [self._ranges["engine_status"][prec_e_index - 1], prec_engine_status]
-            
+            new_engine_list = []
+
+            # Verifica che la stringa precedente sia non vuota, questo per assicurare che l'utilizzo avvenga all'interno di un
+            # ciclo, come da utilizzo inteso dell'oggetto
+            if prec_engine_status != "":
+                prec_e_index = self._ranges["engine_status"].index(prec_engine_status)
+                if (prec_e_index - 1) >= 0 and (prec_e_index + 1) < len(self._ranges["engine_status"]):
+                    new_engine_list = [self._ranges["engine_status"][prec_e_index - 1], prec_engine_status, self._ranges["engine_status"][prec_e_index + 1]]
+                elif (prec_e_index - 1) < 0:
+                    new_engine_list = [prec_engine_status, self._ranges["engine_status"][prec_e_index + 1]]
+                elif (prec_e_index + 1) >= len(self._ranges["engine_status"]):
+                    new_engine_list = [self._ranges["engine_status"][prec_e_index - 1], prec_engine_status]
+            else:
+                # Alternativa prevista nel caso in cui venga utilizzato l'oggetto con chiamata unica al metodo e non
+                # all'interno di un ciclo come nell'utilizzo previsto, per cui nel caso in cui i metodi vengano utilizzati
+                # come una sorta di API. Per questo stesso motivo è stata aggiunta la verifica sulla stringa precedente
+                # , ossia che sia non vuota per prevenire eventuali errori indesiderati
+                new_engine_list = [self._ranges["engine_status"][-3], self._ranges["engine_status"][-2], self._ranges["engine_status"][-1]]
+
             self.set_engine_status(random.choice(new_engine_list))
 
         return fermata_bus

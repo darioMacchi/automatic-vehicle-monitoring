@@ -62,19 +62,20 @@ class AutobusIbrido(Autobus):
         }
 
         # Aggiornamento "pacchetto" dati generale con l'aggiunta di quello specifico
-        # deepcopy(self._updated_data), anzi meglio metodo copy con copia superficiale perché i valori nelle coppie
-        # chiave - valore non sono mai liste o dizionari, sono sempre oggetti immutabili
-        self._data_to_send["collected_metrics"]["hybrid"] = self._updated_data
+        self._data_to_send["collected_metrics"]["hybrid"] = deepcopy(self._updated_data)
+        # Sarebbe più adatto utilizzare il metodo copy con copia superficiale perché i valori nelle coppie
+        # chiave - valore non sono mai liste o dizionari, sono sempre oggetti immutabili, però per avere un maggiore
+        # grado di sicurezza ed essere coperti da eventuali modifiche si utilizza la copia profonda
 
         # Connessione al broker MQTT
-        self.connect_to_mqtt_broker()
+        self._connect_to_mqtt_broker()
 
         # Coda di messaggi, prevalentemente predisposta per ritardo nel tempo di setup della connessione al broker MQTT
         self._msg_queue = []
 
     # Connessione Broker MQTT - setup della connessione verso il broker MQTT, impostazione di client_id e dell'effettiva 
     # connessione, con gestione di eventuali errori legati ad indirizzo errato o a broker non disponibile
-    def connect_to_mqtt_broker(self):
+    def _connect_to_mqtt_broker(self):
         mqtt_client = self.get_mqtt_client()
         host = self.get_host()
         port = self.get_port()
@@ -164,15 +165,26 @@ class AutobusIbrido(Autobus):
 
     # Getter 'updated_data' parameter
     def get_updated_data(self):
-        # Forse meglio copy()
         return deepcopy(self._updated_data)
 
     # Setter 'updated_data' parameter
+    def set_updated_data(self, updated_data: dict):
+        if type(updated_data) is not dict:
+            raise TypeError(f"Errore! Il tipo del parametro passato deve essere 'dict'. Ricevuto {type(updated_data)}")
+
+        self._updated_data.update(updated_data)
+        self._data_to_send["collected_metrics"]["hybrid"].update(updated_data)
 
     # Getter 'threshold_list' parameter
     def get_threshold_list(self):
-        # Forse meglio copy()
         return deepcopy(self._threshold_list)
+
+    # Setter 'threshold_list' parameter
+    def set_threshold_list(self, threshold_list: list):
+        if type(threshold_list) is not list:
+            raise TypeError(f"Errore! Il tipo del parametro passato deve essere 'list'. Ricevuto {type(threshold_list)}")
+        
+        self._threshold_list = deepcopy(threshold_list)
 
     # Getter 'static_threshold' parameter
     def get_static_threshold(self):
@@ -183,8 +195,28 @@ class AutobusIbrido(Autobus):
         if type(static_threshold) is not float:
             raise TypeError(f"Errore! Il tipo del parametro passato deve essere 'float'. Ricevuto {type(static_threshold)}")
         
-        # Modifica anche della lista da cui generare la soglia dinamica di rifornimento e reimpostazione di questa
         self._static_threshold = static_threshold
+
+        # Modifica della lista da cui generare la soglia dinamica di rifornimento e reimpostazione di questa
+        threshold_list = self.get_threshold_list()
+        # Verifica che la nuova soglia statica sia maggiore dell'ultimo elemento della lista (soglia precedente)
+        if static_threshold > threshold_list[-1]:
+            # In questo caso si genera una nuova lista per estendere la precedente
+            #   [a, b] && c > b --> [a, b, b+1, c]
+            extend_list = []
+            for i in np.arange(threshold_list[-1] + 1, static_threshold + 1, 1.0):
+                extend_list.append(i)
+            
+            threshold_list.extend(extend_list)
+        # Verifica che la nuova soglia sia al contrario minore dell'ultimo elemento della lista (soglia precedente), 
+        # e un numero non negativo
+        elif static_threshold < threshold_list[-1] and static_threshold >= 0.0:
+            # In questo caso si "taglia" la vecchia lista all'indice dell'elemento già presente al suo interno
+            #   [a, b] && c < b --> [a, c]
+            upper_bound = threshold_list.index(static_threshold)
+            threshold_list = threshold_list[0:upper_bound+1]
+        
+        self.set_threshold_list(threshold_list)
 
     # Getter 'dynamic_threshold' parameter
     def get_dynamic_threshold(self):
@@ -240,21 +272,23 @@ class AutobusIbrido(Autobus):
             # precedente misura di livello batteria
             if new_bt_lvl not in np.arange(prec_bt_lvl - bt_lvl_span, prec_bt_lvl + bt_lvl_span + 0.01, 0.01):
 
-                # ERRORE - nel momento in cui il limite inferiore è uguale e quello superiore è inferiore in realtà il
-                # flusso entra nell'else modificando la simulazione nell'intervallo [prec_bt_lvl - bt_lvl_span, bt_lvl_up],
-                # quando dovrebbe essere in [prec_bt_lvl - bt_lvl_span || bt_lvl_low, prec_bt_lvl + bt_lvl_span] perché se
-                # sono uguali i limiti inferiori che sia uno o l'altro non fa differenza
-
                 # Verifica presenza dell'intervallo [prec_bt_lvl - bt_lvl_span, prec_bt_lvl + bt_lvl_span] all'interno
                 # dell'intervallo generale
-                if ( prec_bt_lvl - bt_lvl_span ) > self._ranges["battery_lvl_low"] and ( prec_bt_lvl + bt_lvl_span ) < self._ranges["battery_lvl_up"]:
+                if ( prec_bt_lvl - bt_lvl_span ) >= self._ranges["battery_lvl_low"] and ( prec_bt_lvl + bt_lvl_span ) <= self._ranges["battery_lvl_up"] and ( prec_bt_lvl + bt_lvl_span ) >= ( prec_bt_lvl - bt_lvl_span ):
                     self.set_battery_lvl( round( random.random() * (( prec_bt_lvl + bt_lvl_span ) - ( prec_bt_lvl - bt_lvl_span )) + ( prec_bt_lvl - bt_lvl_span ), 2 ) )
                 # Verifica uscita dall'intervallo generale dell'estremo inferiore
-                elif ( prec_bt_lvl - bt_lvl_span ) < self._ranges["battery_lvl_low"]:
+                elif ( prec_bt_lvl - bt_lvl_span ) < self._ranges["battery_lvl_low"] and ( prec_bt_lvl + bt_lvl_span ) <= self._ranges["battery_lvl_up"] and ( prec_bt_lvl + bt_lvl_span ) >= self._ranges["battery_lvl_low"]:
                     self.set_battery_lvl( round( random.random() * (( prec_bt_lvl + bt_lvl_span ) - self._ranges["battery_lvl_low"]) + self._ranges["battery_lvl_low"], 2 ) )
                 # Uscita dall'intervallo generale dell'estremo superiore
-                else:
+                elif ( prec_bt_lvl + bt_lvl_span ) > self._ranges["battery_lvl_up"] and ( prec_bt_lvl - bt_lvl_span ) >= self._ranges["battery_lvl_low"] and self._ranges["battery_lvl_up"] >= ( prec_bt_lvl - bt_lvl_span ):
                     self.set_battery_lvl( round( random.random() * (self._ranges["battery_lvl_up"] - ( prec_bt_lvl - bt_lvl_span )) + ( prec_bt_lvl - bt_lvl_span ), 2 ) )
+                else:
+                    # Alternativa prevista nel caso in cui venga utilizzato l'oggetto con chiamata unica al metodo e non
+                    # all'interno di un ciclo come nell'utilizzo previsto, per cui nel caso in cui i metodi vengano utilizzati
+                    # come una sorta di API. Per questo stesso motivo è stata aggiunta la condizione che riguarda i due estremi
+                    # , ossia che l'estremo superiore utilizzato per l'aggiornamento sia effettivamente maggiore o uguale di
+                    # quello inferiore utilizzato nell'aggiornamento
+                    self.set_battery_lvl(self._ranges["battery_lvl_up"])
 
             else:
                 self.set_battery_lvl( new_bt_lvl )
@@ -267,22 +301,23 @@ class AutobusIbrido(Autobus):
             # dalla precedente misura di temperatura batteria
             if new_bt_temp not in np.arange(prec_bt_temp - bt_temp_span, prec_bt_temp + bt_temp_span + 0.01, 0.01):
 
-                # ERRORE - nel momento in cui il limite inferiore è uguale e quello superiore è inferiore in realtà il
-                # flusso entra nell'else modificando la simulazione nell'intervallo
-                # [prec_bt_temp - bt_temp_span, bt_temp_up], quando dovrebbe essere in
-                # [prec_bt_temp - bt_temp_span || bt_temp_low, prec_bt_temp + bt_temp_span] perché se sono uguali i limiti
-                # inferiori che sia uno o l'altro non fa differenza
-
                 # Verifica presenza dell'intervallo [prec_bt_temp - bt_temp_span, prec_bt_temp + bt_temp_span] all'interno
                 # dell'intervallo generale
-                if ( prec_bt_temp - bt_temp_span ) > self._ranges["battery_temp_low"] and ( prec_bt_temp + bt_temp_span ) < self._ranges["battery_temp_up"]:
+                if ( prec_bt_temp - bt_temp_span ) >= self._ranges["battery_temp_low"] and ( prec_bt_temp + bt_temp_span ) <= self._ranges["battery_temp_up"] and ( prec_bt_temp + bt_temp_span ) >= ( prec_bt_temp - bt_temp_span ):
                     self.set_battery_temp( round( random.random() * (( prec_bt_temp + bt_temp_span ) - ( prec_bt_temp - bt_temp_span )) + ( prec_bt_temp - bt_temp_span ), 2 ) )
                 # Verifica uscita dall'intervallo generale dell'estremo inferiore
-                elif ( prec_bt_temp - bt_temp_span ) < self._ranges["battery_temp_low"]:
+                elif ( prec_bt_temp - bt_temp_span ) < self._ranges["battery_temp_low"] and ( prec_bt_temp + bt_temp_span ) <= self._ranges["battery_temp_up"] and ( prec_bt_temp + bt_temp_span ) >= self._ranges["battery_temp_low"]:
                     self.set_battery_temp( round( random.random() * (( prec_bt_temp + bt_temp_span ) - self._ranges["battery_temp_low"]) + self._ranges["battery_temp_low"], 2 ) )
                 # Uscita dall'intervallo generale dell'estremo superiore
-                else:
+                elif ( prec_bt_temp + bt_temp_span ) > self._ranges["battery_temp_up"] and ( prec_bt_temp - bt_temp_span ) >= self._ranges["battery_temp_low"] and self._ranges["battery_temp_up"] >= ( prec_bt_temp - bt_temp_span ):
                     self.set_battery_temp( round( random.random() * (self._ranges["battery_temp_up"] - ( prec_bt_temp - bt_temp_span )) + ( prec_bt_temp - bt_temp_span ), 2 ) )
+                else:
+                    # Alternativa prevista nel caso in cui venga utilizzato l'oggetto con chiamata unica al metodo e non
+                    # all'interno di un ciclo come nell'utilizzo previsto, per cui nel caso in cui i metodi vengano utilizzati
+                    # come una sorta di API. Per questo stesso motivo è stata aggiunta la condizione che riguarda i due estremi
+                    # , ossia che l'estremo superiore utilizzato per l'aggiornamento sia effettivamente maggiore o uguale di
+                    # quello inferiore utilizzato nell'aggiornamento
+                    self.set_battery_temp(initial_battery_temp)
 
             else:
                 self.set_battery_temp( new_bt_temp )
@@ -327,28 +362,26 @@ class AutobusIbrido(Autobus):
      
         # Verifica connessione client to broker
         if mqtt_client.is_connected():
-            # Verifica messaggi in coda
-            if len(msg_queue) > 0:
-                # Per ogni messaggio in coda avviene la pubblicazione di quest'ultimo, in maniera antecedente al 
-                # messaggio attuale
-                for i in range(0, len(msg_queue)):
-                    # Publish con QoS 1 per assicurare la consegna del messaggio
-                    msginfo = mqtt_client.publish(topic="AVM/telemetry/autobus/hybrid", payload=msg_queue[i], qos=1)
+            # Verifica messaggi in coda. Per ogni messaggio in coda avviene la pubblicazione di quest'ultimo, in 
+            # maniera antecedente al messaggio attuale
+            for msg in msg_queue:
+                # Publish con QoS 1 per assicurare la consegna del messaggio in coda
+                msginfo = mqtt_client.publish(topic="AVM/telemetry/autobus/hybrid", payload=msg, qos=1)
 
-                    # Attesa della pubblicazione del messaggio per assicurare una corretta gestione della QoS desiderata.
-                    # QoS = 1 indica una qualità del servizio 'at_least_once'
-                    before_wait = time.time()
-                    msginfo.wait_for_publish(timeout=mqtt_timeout)
-                    after_wait = time.time()
-                    if after_wait - before_wait >= mqtt_timeout:
-                        print(f"Uscita da wait_for_publish() a causa del timeout di {mqtt_timeout} s (messaggio in coda)")
-                    else:
-                        print(f"Uscita da wait_for_publish() con successo della pubblicazione sul broker del messaggio in coda")
+                # Attesa della pubblicazione del messaggio per assicurare una corretta gestione della QoS desiderata.
+                # QoS = 1 indica una qualità del servizio 'at_least_once'
+                before_wait = time.time()
+                msginfo.wait_for_publish(timeout=mqtt_timeout)
+                after_wait = time.time()
+                if after_wait - before_wait >= mqtt_timeout:
+                    print(f"Uscita da wait_for_publish() --> timeout di {mqtt_timeout} s scaduto (messaggio in coda)")
+                else:
+                    print(f"Uscita da wait_for_publish() con successo della pubblicazione sul broker del messaggio in coda")
 
-                # Cancellazione dalla coda di tutti i messaggi precedentemente in attesa
-                msg_queue.clear()
+            # Cancellazione dalla coda di tutti i messaggi precedentemente in attesa
+            msg_queue.clear()
 
-            # Publish con QoS 1 per assicurare la consegna del messaggio
+            # Publish con QoS 1 per assicurare la consegna del messaggio corrente
             msginfo = mqtt_client.publish(topic="AVM/telemetry/autobus/hybrid", payload=payload, qos=1)
 
             # Attesa della pubblicazione del messaggio per assicurare una corretta gestione della QoS desiderata.
@@ -357,13 +390,13 @@ class AutobusIbrido(Autobus):
             msginfo.wait_for_publish(timeout=mqtt_timeout)
             after_wait = time.time()
             if after_wait - before_wait >= mqtt_timeout:
-                print(f"Uscita da wait_for_publish() a causa del timeout di {mqtt_timeout} s")
+                print(f"Uscita da wait_for_publish() --> timeout di {mqtt_timeout} s scaduto")
             else:
-                print(f"Uscita da wait_for_publish() con successo della pubblicazione sul broker")
+                print(f"Uscita da wait_for_publish() con successo della pubblicazione sul broker del messaggio corrente")
         else:
             # Aggiunta messaggio non inviato alla coda di messaggi in attesa
             msg_queue.append(payload)
-            print("Messaggio in coda...")
+            print("Connessione assente --> messaggio in coda...")
 
         # Rimozione dello stop del loop per due motivi:
         #   1. Stoppando il loop se la disconnessione al broker avviene nel mentre che il thread del loop non è "vivo"
