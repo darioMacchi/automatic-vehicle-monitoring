@@ -1,7 +1,7 @@
+# MacOS file to ignore
 .DS_Store
 
-vAVMenv/bin
-vAVMenv/include
-vAVMenv/lib
-vAVMenv/pyvenv.cfg
-vAVMenv/__pycache__
+# Project folders to ignore
+vAVMenv/
+__pycache__/
+*.egg-info/

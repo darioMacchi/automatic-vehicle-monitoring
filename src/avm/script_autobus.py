@@ -2,9 +2,9 @@ import signal
 import sys
 import time
 
-from autobus_elettrico import AutobusElettrico
-from autobus_ibrido import AutobusIbrido
-from autobus_termico import AutobusTermico
+from avm.autobus_elettrico import AutobusElettrico
+from avm.autobus_ibrido import AutobusIbrido
+from avm.autobus_termico import AutobusTermico
 
 
 # Lista di autobus smart con motorizzazione termica

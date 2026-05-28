@@ -1,8 +1,7 @@
-from autobus import Autobus
-from autobus_elettrico import AutobusElettrico
-from autobus_ibrido import AutobusIbrido
-from autobus_termico import AutobusTermico
-from autobus_elettrico import AutobusElettrico
+from avm.autobus import Autobus
+from avm.autobus_elettrico import AutobusElettrico
+from avm.autobus_ibrido import AutobusIbrido
+from avm.autobus_termico import AutobusTermico
 
 
 # Test costruttore

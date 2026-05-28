@@ -5,8 +5,9 @@ import time
 from copy import deepcopy
 
 import numpy as np
-from autobus import Autobus
 from paho.mqtt.enums import MQTTErrorCode
+
+from avm.autobus import Autobus
 
 
 # Oggetto Autobus Ibrido - sottoclasse che identifica l'oggetto autobus smart di motorizzazione ibrida, 
