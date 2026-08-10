@@ -232,7 +232,18 @@ class AutobusIbrido(Autobus):
 
     # Getter 'msg_queue' parameter
     def get_msg_queue(self):
-        return self._msg_queue
+        return self._msg_queue.copy()
+        
+    # Clear 'msg_queue' parameter
+    def clear_msg_queue(self):
+        self._msg_queue.clear()
+
+    # Append 'msg_queue' parameter
+    def append_msg_queue(self, el: str | bytes):
+        if type(el) is not str and type(el) is not bytes:
+            raise TypeError(f"Errore! Il tipo del parametro passato deve essere 'str' | 'bytes'. Ricevuto {type(el)}")
+
+        self._msg_queue.append(el)
 
     # Simulazione Metriche - metodo che permette di generare ed aggiornare le metriche da comprendere successivamente nel
     # "pacchetto" dati da inviare, attraverso il protocollo di comunicazione MQTT, al sistema di Ingestion. L'aggiornamento
@@ -381,6 +392,7 @@ class AutobusIbrido(Autobus):
 
             # Cancellazione dalla coda di tutti i messaggi precedentemente in attesa
             msg_queue.clear()
+            self.clear_msg_queue()
 
             # Publish con QoS 1 per assicurare la consegna del messaggio corrente
             msginfo = mqtt_client.publish(topic="AVM/telemetry/autobus/hybrid", payload=payload, qos=1)
@@ -396,7 +408,7 @@ class AutobusIbrido(Autobus):
                 print(f"Uscita da wait_for_publish() con successo della pubblicazione sul broker del messaggio corrente")
         else:
             # Aggiunta messaggio non inviato alla coda di messaggi in attesa
-            msg_queue.append(payload)
+            self.append_msg_queue(el=payload)
             print("Connessione assente --> messaggio in coda...")
 
         # Rimozione dello stop del loop per due motivi:
