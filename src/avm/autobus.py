@@ -722,4 +722,4 @@ class Autobus:
         print("successo " if err_d == MQTTErrorCode.MQTT_ERR_SUCCESS else "insuccesso ", end="")
         print("e terminazione background thread avvenuta con ", end="")
         print("successo " if err_s == MQTTErrorCode.MQTT_ERR_SUCCESS else "insuccesso ", end="")
-        print(f"per l'autobus con motorizzazione termica con targa {self.get_LP()}\n")
+        print(f"per l'autobus con targa {self.get_LP()}\n")

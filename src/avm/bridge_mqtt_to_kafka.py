@@ -56,7 +56,7 @@ class BridgeMQTTKafka:
     # di connessione, fallimento alla riconessione automatica, subscription e ricezione di un messaggio
     def _setup_mqtt(self):
         # Preparazione client_id per consumer MQTT
-        consumer_client_id = f"AVM_telemetry_consumer"
+        consumer_client_id = "AVM_telemetry_consumer"
 
         # Setup client MQTT
         mqttc = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2, client_id=consumer_client_id, clean_session=False)
