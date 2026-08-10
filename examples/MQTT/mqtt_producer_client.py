@@ -25,7 +25,7 @@ def on_connect(client, userdata, flags: mqtt.ConnectFlags, reason_code: mqttrc.R
         print("The broker still has the session information for the client: ", end="")
         print("YES\n" if flags.session_present else "NO\n")
 
-# The callback for when an automatic connection made by loop_start() or loop_forvere() failed to establish 
+# The callback for when an automatic connection made by loop_start() or loop_forever() failed to establish 
 def on_connect_fail(client, userdata):
     print("Failed to establish the automatic TCP (re)connection to the broker made by loop_forever()")
 

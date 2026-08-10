@@ -46,7 +46,7 @@ def shutdown_all_autobus(sig_num: int, frame):
 # Check CMD Line Arguments - verifica dei parametri passati da linea di comando, in particolare relativi al numero di
 # autobus da costituire divisi per tipologia di motorizzazione. Viene operato un controllo sul tipo dei paramteri passati,
 # che in quanto passati da linea di comando mi aspetto essere stringhe, e successivo controllo che il numero passato,
-# oltre che valido, sia anche un numero non negativo, per l'ovvia ragione che non è possibile avere un numero negativo
+# oltre che valido, sia anche un numero non negativo, per l'ovvia ragione che non è possibile avere un numero negativo di
 # autobus. Infine l'ultimo controllo operato è quello del non superamento della soglia massima di autobus data dal numero
 # massimo di targhe disponibili per classe di motorizzazione.
 # Altri parametri su cui viene eseguito il controllo sono host e porta del broker MQTT; per l'host viene controllato 

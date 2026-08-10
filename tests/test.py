@@ -324,7 +324,7 @@ def test_costruttore_hybrid(num_autobus: int, ranges: dict, timeout: float, host
 
     return flag
 
-# Metodo dedicato all'esecuzione dei test UD, TL e ST in modo indipendente dal tipo di motorizzazioe dell'autobus passato
+# Metodo dedicato all'esecuzione dei test UD, TL e ST in modo indipendente dal tipo di motorizzazione dell'autobus passato
 #   UD --> Updated Data
 #   TL --> Threshold List
 #   ST --> Static Threshold
@@ -357,7 +357,7 @@ def report_UDTLST_tests(flag_gud, flag_sud, flag_gtl, flag_stl, flag_sstg, flag_
     print("\tTest set_static_threshold() lower than constructor: " + "SUPERATO" if flag_sstl else "NON SUPERATO")
     print("\tTest set_static_threshold() equal to constructor: " + "SUPERATO" if flag_sste else "NON SUPERATO")
 
-# Test robustezza metodo simulate() per evitare problemi nell'evenutalità di errore nella chiamata o di errato utilizzo
+# Test robustezza metodo simulate() per evitare problemi nell'eventualità di errore nella chiamata o di errato utilizzo
 # semantico, ossia che l'utilizzo non avvenga all'interno di un ciclo
 def test_robustness_simulate(ranges: dict, timeout: float, host: str, port: int, long_low: float, long_up: float, lat_low: float, lat_up: float, tyre_low: float, tyre_up: float, psg_low: int, psg_up: int, brake_range: list, engine_range: list, bt_temp_low: float, bt_temp_up: float, cont_fermate: int):
     flag = True

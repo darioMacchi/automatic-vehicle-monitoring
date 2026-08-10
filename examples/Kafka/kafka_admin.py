@@ -9,7 +9,7 @@ from kafka.errors import (KafkaError, NoBrokersAvailable,
 # sul tipo del parametro passato da linea di comando, ulteriori verifiche su stringhe non nulle, sulla validità dei
 # numeri di porta passati e sull'appartenenza al range permesso. Inoltre viene eseguita una verifica sul formato dei
 # parametri passati da linea di comando come indirizzi dei bootstrap server (broker) di Kafka, ossia viene verificato che
-# il formato sia  strettamente del tipo 'host:porta'
+# il formato sia strettamente del tipo 'host:porta'
 def check_cmd_line_args(topics: list[str], servers: list[str]):
     if type(topics) is not list:
         raise TypeError(f"Errore! Il tipo del parametro 'topics' passato deve essere 'list'. Ricevuto {type(topics)}")
