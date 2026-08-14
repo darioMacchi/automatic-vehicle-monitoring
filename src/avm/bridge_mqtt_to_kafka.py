@@ -57,7 +57,7 @@ class BridgeMQTTKafka:
         self._min_insync_replicas = 2
 
         # Flink setup
-        self._flink_env = self.setup_flink_env()
+        self._flink_env = self._setup_flink_env()
 
     # Setup MQTT - metodo necessario alla creazione del client MQTT specificando versione delle callback, client_id 
     # e sessione persistente. Vengono inoltre specificate le relative callback necessarie ai fini di corretta gestione
@@ -129,7 +129,7 @@ class BridgeMQTTKafka:
 
     # Setup Flink - metodo necessario per l'apertura della connessione dell'environment Flink e l'aggiunta dell'archivio
     # Java (JAR) che contiene la libreria necessaria per sfruttare i plugin di Kafka messi a dispozione da parte di Flink
-    def setup_flink_env(self):
+    def _setup_flink_env(self):
         try:
             flink_env = StreamExecutionEnvironment.get_execution_environment()
             flink_env.add_jars("file:///absolute-path/to/flink-1.20.3/lib/flink-sql-connector-kafka-3.3.0-1.20.jar")
@@ -229,7 +229,7 @@ class BridgeMQTTKafka:
     # Metodo write_to_kafka_sink - necessario per la scrittura all'interno dei topic Kafka specifica per il job Flink
     # che esegue al di sopra della JVM, per cui necessita di diverse informazioni che normalmente in Python non sarebbe
     # necessario specificare, come ad esempio il 'type_info' e il 'KafkaRecordSerializationSchema'
-    def write_to_kafka_sink(self, msg: str, topic: str):
+    def _write_to_kafka_sink(self, msg: str, topic: str):
         if type(msg) is not str:
             raise TypeError(f"Errore! Il tipo del parametro 'msg' passato deve essere 'str'. Ricevuto {type(msg)}")
 
@@ -369,7 +369,7 @@ class BridgeMQTTKafka:
                 future = self.get_kafka_client().send(topic=kafka_topic, value=msg.payload, headers=[("content-encoding", b"JSON")])
 
                 # Invio del messaggio verso il broker Kafka al topic dedito al processing della telemetria ricevuta
-                self.write_to_kafka_sink(msg=msg.payload.decode(), topic=flink_kafka_topic)
+                self._write_to_kafka_sink(msg=msg.payload.decode(), topic=flink_kafka_topic)
 
                 try:
                     # Attesa dell'effettivo invio del messaggio
@@ -409,7 +409,7 @@ class BridgeMQTTKafka:
             future = self.get_kafka_client().send(topic=kafka_topic, value=msg.payload, headers=[("content-encoding", b"JSON")])
 
             # Invio del messaggio verso il broker Kafka al topic dedito al processing della telemetria ricevuta
-            self.write_to_kafka_sink(msg=msg.payload.decode(), topic=flink_kafka_topic)
+            self._write_to_kafka_sink(msg=msg.payload.decode(), topic=flink_kafka_topic)
 
             try:
                 # Attesa dell'effettivo invio del messaggio
