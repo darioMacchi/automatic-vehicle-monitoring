@@ -50,29 +50,77 @@ class WatermarkLogger(KeyedProcessFunction):
 
 # [dict, dict, str, TimeWindow]
 class MyProcessWindowFunction(ProcessWindowFunction):
+    status_failure = ["pessimo", "mediocre", "cattivo"]
+
     def process(self, key: str, context: ProcessWindowFunction.Context[TimeWindow], elements: Iterable) -> Iterable:
-        total = 0.0
-        count = 0
+        acc_sp = 0.0
+        count_sp = 0
+        acc_tp = 0.0
+        acc_bt = 0.0
+        count_tp = 0
+        count_es = 0
+        count_bs = 0
+        count_bt = 0
+        avg_sp = None
+        avg_tp = None
+        avg_bt = None
+
         for element in elements:
             # element is a dict (parsed JSON)
             speed = element.get('collected_metrics', {}).get('speed')
-            if speed is None:
-                continue
+            tyre_pressure = element.get('collected_metrics', {}).get('tyre_pressure')
+            engine_status = element.get('collected_metrics', {}).get('engine_status')
+            brake_status = element.get('collected_metrics', {}).get('brake_status')
 
-            total += float(speed)
-            count += 1
+            hybrid = element.get('collected_metrics', {}).get('hybrid')
+            electric = element.get('collected_metrics', {}).get('electric')
 
-        if count == 0:
-            return
-        
-        avg = total / count
+            if speed is not None:
+                acc_sp += float(speed)
+                count_sp += 1
+
+            if tyre_pressure is not None:
+                acc_tp += float(tyre_pressure)
+                count_tp += 1
+
+            if engine_status in MyProcessWindowFunction.status_failure:
+                count_es += 1
+
+            if brake_status in MyProcessWindowFunction.status_failure:
+                count_bs += 1
+
+            if hybrid is not None:
+                battery_temp = element.get('collected_metrics', {}).get('hybrid').get('battery_temperature')
+                acc_bt += battery_temp
+                count_bt += 1
+
+            if electric is not None:
+                battery_temp = element.get('collected_metrics', {}).get('electric').get('battery_temperature')
+                acc_bt += battery_temp
+                count_bt += 1
+
+        if count_sp > 0:
+            avg_sp = acc_sp / count_sp
+
+        if count_tp > 0:
+            avg_tp = acc_tp / count_tp
+
+        if count_bt > 0:
+            avg_bt = acc_bt / count_bt
 
         result = {
             "license_plate": key,
             "window_start": context.window().start,
             "window_end": context.window().end,
-            "avg_speed": avg
+            "avg_speed": avg_sp,
+            "avg_tyre_press": avg_tp,
+            "count_engine_stat": count_es,
+            "count_brake_stat": count_bs
         }
+
+        if hybrid is not None or electric is not None:
+            result.update({"avg_battery_temp": avg_bt})
+
         print(f"[Window][DEBUG] {result}")   # debug utile
 
         yield result
@@ -117,15 +165,21 @@ def write_to_kafka_sink(env: StreamExecutionEnvironment):
 
 
 def read_from_kafka_and_compute(env: StreamExecutionEnvironment):
+    topics = ['test_json_topic']
+
     kafka_source = (
         KafkaSource.builder()
-        .set_topics('test_json_topic')
+        .set_topics(*topics)
         .set_value_only_deserializer(SimpleStringSchema())
         .set_properties({'bootstrap.servers': 'localhost:9092', 'group.id': 'test_group_1'})
-        .set_starting_offsets(KafkaOffsetsInitializer.earliest())
+        .set_starting_offsets(KafkaOffsetsInitializer.latest())
         .build()
     )
-    
+
+    # --> for_bounded_out_of_orderness() consente di ammettere messaggi out of order ed attendere questi fino ad un tempo
+    #     massimo passato come argomento [60sec nel mio caso sembra ok]
+    # --> with_idleness() consente di ignorare partizioni idle del topic Kafka (per non tenere bloccato il watermark globale)
+    #     [60sec nel mio caso sembra ok]
     watermark_strategy = WatermarkStrategy.for_bounded_out_of_orderness(Duration.of_seconds(10)) \
                                         .with_idleness(Duration.of_seconds(10)) \
                                         .with_timestamp_assigner(MyTimestampAssigner())
@@ -148,21 +202,31 @@ def read_from_kafka_and_compute(env: StreamExecutionEnvironment):
                                 .print()
 
     # key by license_plate, sliding window size 60s, slide 5s, compute average speed per window
-    ds_windowed_avg = (
+    ds_windowed_processed = (
         ds_parsed
         .key_by(lambda d: d['license_plate'], key_type=Types.STRING()) \
         .window(SlidingEventTimeWindows.of(Time.seconds(10), Time.seconds(1))) \
+        # lateness -> 90000ms
         .allowed_lateness(time_ms=30000) \
         .process(MyProcessWindowFunction())
     )
 
     # filter results with avg_speed >= 15
-    ds_filtered = ds_windowed_avg.filter(lambda rec: rec.get('avg_speed', 0) >= 15.0)
+    ds_filtered_speed = ds_windowed_processed.filter(lambda rec: rec.get('avg_speed', 0) is not None and rec.get('avg_speed', 0) >= 15.0)
+
+    ds_filtered_tyre_press = ds_windowed_processed.filter(lambda rec: rec.get('avg_tyre_press', 0) is not None and rec.get('avg_tyre_press', 0) <= 1.5)
+    ds_filtered_engine_stat = ds_windowed_processed.filter(lambda rec: rec.get('count_engine_stat', 0) >= 5)
+    ds_filtered_brake_stat = ds_windowed_processed.filter(lambda rec: rec.get('count_brake_stat', 0) >= 5)
+    ds_filtered_battery_temp = ds_windowed_processed.filter(lambda rec: rec.get('avg_battery_temp', 0) is not None and rec.get('avg_battery_temp', 0) >= 45.0)
 
     # print or sink the final results
-    ds_filtered.print()
+    ds_filtered_speed.print()
+    ds_filtered_tyre_press.print()
+    ds_filtered_engine_stat.print()
+    ds_filtered_brake_stat.print()
+    ds_filtered_battery_temp.print()
 
-    env.execute("kafka_sliding_avg_speed")
+    env.execute("kafka_sliding_process_sp_tp_es_bs")
 
 
 if __name__ == '__main__':
