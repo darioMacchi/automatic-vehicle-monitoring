@@ -68,7 +68,7 @@ class MyTimestampAssigner(TimestampAssigner):
 # dispongono), e tenere monitorato il numero di failure di impianto frenante e motore
 class MyProcessWindowFunction(ProcessWindowFunction):
     # Predisposizione stati di failure per impianto frenante e motore
-    status_failure = ["pessimo", "mediocre", "cattivo"]
+    status_failure = ["pessimo", "mediocre"]
 
     # Metodo process - permette l'effettiva elaborazione dei dati provenienti dal KeyedDataStream
     def process(self, key: str, context: ProcessWindowFunction.Context[TimeWindow], elements: Iterable) -> Iterable:
@@ -151,8 +151,6 @@ class MyProcessWindowFunction(ProcessWindowFunction):
             #   --> media di temperatura delle batterie
             result.update({"avg_battery_temp": avg_bt})
 
-        print(f"[Window][DEBUG] {result}")   # debug utile
-
         yield result
 
 
@@ -174,8 +172,8 @@ class EdgeProcessing:
 
         # Parameter thresholds
         self._tyre_pressure_threshold = 2.0
-        self._brake_status_threshold = 2
-        self._engine_status_threshold = 2
+        self._brake_status_threshold = 15
+        self._engine_status_threshold = 12
         self._battery_temp_threshold = 45.0
         self._ranges = {
             "battery_temp_min": 5.0,
@@ -418,11 +416,11 @@ class EdgeProcessing:
         )
 
         # --> for_bounded_out_of_orderness() consente di ammettere messaggi out of order ed attendere questi fino ad un tempo
-        #     massimo passato come argomento [60 s]
+        #     massimo passato come argomento
         # --> with_idleness() consente di ignorare partizioni idle del topic Kafka (per non tenere bloccato il watermark
-        #     globale) [60 s]
-        watermark_strategy = WatermarkStrategy.for_bounded_out_of_orderness(Duration.of_seconds(10)) \
-                                            .with_idleness(Duration.of_seconds(10)) \
+        #     globale)
+        watermark_strategy = WatermarkStrategy.for_bounded_out_of_orderness(Duration.of_seconds(30)) \
+                                            .with_idleness(Duration.of_seconds(60)) \
                                             .with_timestamp_assigner(MyTimestampAssigner())
 
         # Assegnamento watermarks basati sul timestamp del dato di telemetria
@@ -439,11 +437,13 @@ class EdgeProcessing:
         ds_windowed_processed = (
             ds_parsed
             .key_by(lambda d: d['license_plate'], key_type=Types.STRING()) \
-            .window(SlidingEventTimeWindows.of(Time.seconds(10), Time.seconds(1))) \
-            # lateness --> 90000
-            .allowed_lateness(time_ms=30000) \
+            .window(SlidingEventTimeWindows.of(Time.seconds(60), Time.seconds(5))) \
+            .allowed_lateness(time_ms=90000) \
             .process(MyProcessWindowFunction())
         )
+
+        # Stampa dei risultati con utilizzo del suffisso per ogni dato presente nel data stream
+        ds_windowed_processed.print("Dati di telemetria nella finestra di interesse:\n")
 
         # Filtraggio dati di pressione delle gomme --> ALLARME se al di sotto di 'tp_thres'
         ds_filtered_tyre_press = ds_windowed_processed.filter(lambda rec: rec.get('avg_tyre_press', 0) is not None and rec.get('avg_tyre_press', 0) <= tp_thres)
@@ -457,7 +457,7 @@ class EdgeProcessing:
         # Filtraggio dati di temperatura delle batterie --> ALLARME se al di sopra di 'bt_thres'
         ds_filtered_battery_temp = ds_windowed_processed.filter(lambda rec: rec.get('avg_battery_temp', 0) is not None and rec.get('avg_battery_temp', 0) >= bt_thres)
 
-        # Stampa degli eventuali risultati con utilizzo del suffisso per ogni dato presente nel data stream
+        # Stampa degli eventuali risultati filtrati con utilizzo del suffisso per ogni dato presente nel data stream
         ds_filtered_tyre_press.print(f"Dati di telemetria la cui pressione delle gomme mediata non supera i {tp_thres} bar:\n")
         ds_filtered_engine_stat.print("Dati di telemetria il cui stato del motore è in condizioni critiche:\n")
         ds_filtered_brake_stat.print("Dati di telemetria il cui stato dell'impianto frenante è in condizioni critiche:\n")
