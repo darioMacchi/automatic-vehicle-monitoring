@@ -140,7 +140,7 @@ class MyProcessWindowFunction(ProcessWindowFunction):
             "license_plate": key,
             "window_start": context.window().start,
             "window_end": context.window().end,
-            "avg_tyre_press": avg_tp,
+            "avg_tyre_press": round(avg_tp, 4),
             "count_engine_stat": count_es,
             "count_brake_stat": count_bs
         }
@@ -149,7 +149,7 @@ class MyProcessWindowFunction(ProcessWindowFunction):
         if hybrid is not None or electric is not None:
             # Aggiunta al dato da restituire di:
             #   --> media di temperatura delle batterie
-            result.update({"avg_battery_temp": avg_bt})
+            result.update({"avg_battery_temp": round(avg_bt, 4)})
 
         yield result
 
