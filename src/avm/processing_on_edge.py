@@ -13,8 +13,9 @@ from pyflink.common.serialization import SimpleStringSchema
 from pyflink.common.watermark_strategy import TimestampAssigner
 from pyflink.datastream import (ProcessWindowFunction,
                                 StreamExecutionEnvironment)
-from pyflink.datastream.connectors.kafka import (KafkaOffsetsInitializer,
-                                                 KafkaSource)
+from pyflink.datastream.connectors.kafka import (
+    DeliveryGuarantee, KafkaOffsetsInitializer, KafkaRecordSerializationSchema,
+    KafkaSink, KafkaSource)
 from pyflink.datastream.window import SlidingEventTimeWindows, TimeWindow
 
 
@@ -70,6 +71,29 @@ class MyProcessWindowFunction(ProcessWindowFunction):
     # Predisposizione stati di failure per impianto frenante e motore
     status_failure = ["pessimo", "mediocre"]
 
+    def __init__(self, tp_thres: float, bs_thres: int, es_thres: int, bt_thres: float):
+        # Setup thresholds
+        self._tp_thres = tp_thres
+        self._bs_thres = bs_thres
+        self._es_thres = es_thres
+        self._bt_thres = bt_thres
+
+    # Getter 'tp_thres' parameter
+    def get_tp_thres(self):
+        return self._tp_thres
+
+    # Getter 'bs_thres' parameter
+    def get_bs_thres(self):
+        return self._bs_thres
+
+    # Getter 'es_thres' parameter
+    def get_es_thres(self):
+        return self._es_thres
+
+    # Getter 'bt_thres' parameter
+    def get_bt_thres(self):
+        return self._bt_thres
+
     # Metodo process - permette l'effettiva elaborazione dei dati provenienti dal KeyedDataStream
     def process(self, key: str, context: ProcessWindowFunction.Context[TimeWindow], elements: Iterable) -> Iterable:
         # Predisposizione var necessarie
@@ -81,6 +105,10 @@ class MyProcessWindowFunction(ProcessWindowFunction):
         count_bt = 0
         avg_tp = None
         avg_bt = None
+        alarm_tp = False
+        alarm_es = False
+        alarm_bs = False
+        alarm_bt = False
 
         for element in elements:
             # element è un dict (JSON parsato [deserializzato])
@@ -129,6 +157,18 @@ class MyProcessWindowFunction(ProcessWindowFunction):
         if count_bt > 0:
             avg_bt = acc_bt / count_bt
 
+        # Verifica dati di pressione delle gomme --> ALLARME se al di sotto di 'tp_thres'
+        if avg_tp <= self.get_tp_thres():
+            alarm_tp = True
+
+        # Verifica dati di stato del motore --> ALLARME se al di sopra di 'es_thres'
+        if count_es >= self.get_es_thres():
+            alarm_es = True
+
+        # Verifica dati di stato dell'impianto frenante --> ALLARME se al di sopra di 'bs_thres'
+        if count_bs >= self.get_bs_thres():
+            alarm_bs = True
+
         # Predisposizione dato da restituire fornito di:
         #   --> targa
         #   --> inizio della finestra in considerazione
@@ -136,20 +176,36 @@ class MyProcessWindowFunction(ProcessWindowFunction):
         #   --> media di pressione delle gomme
         #   --> conteggio di stati del motore critici
         #   --> conteggio di stati dell'impianto frenante critici
+        #   --> allarme di pressione delle gomme
+        #   --> allarme di stato del motore
+        #   --> allarme di stato dell'impianto frenante
         result = {
             "license_plate": key,
             "window_start": context.window().start,
             "window_end": context.window().end,
             "avg_tyre_press": round(avg_tp, 4),
             "count_engine_stat": count_es,
-            "count_brake_stat": count_bs
+            "count_brake_stat": count_bs,
+            "alarm_tyre_press": alarm_tp,
+            "alarm_engine_stat": alarm_es,
+            "alarm_brake_stat": alarm_bs
         }
 
         # Verifica della presenza di motorizzazione ibrida o elettrica
         if hybrid is not None or electric is not None:
+            # Verifica dati di temperatura delle batterie --> ALLARME se al di sopra di 'bt_thres'
+            if avg_bt >= self.get_bt_thres():
+                alarm_bt = True
+
             # Aggiunta al dato da restituire di:
             #   --> media di temperatura delle batterie
-            result.update({"avg_battery_temp": round(avg_bt, 4)})
+            #   --> allarme di temperatura delle batterie
+            result.update(
+                {
+                    "avg_battery_temp": round(avg_bt, 4),
+                    "alarm_battery_temp": alarm_bt
+                }
+            )
 
         yield result
 
@@ -164,8 +220,8 @@ class EdgeProcessing:
         self._brokers_kafka = brokers_kafka.copy()
         self._kafka_admin = self._setup_kafka()
         self._partitions = 1
-        self._replication = 1
-        self._min_insync_replicas = 1
+        self._replication = 3
+        self._min_insync_replicas = 2
 
         # Flink setup
         self._flink_env = self._setup_flink_env()
@@ -183,8 +239,12 @@ class EdgeProcessing:
         }
 
         # Topics initialization
-        self._topics = ['AVM.processing.autobus.termic', 'AVM.processing.autobus.hybrid', 'AVM.processing.autobus.electric']
-        self._create_topic_if_not_exist(topics=self.get_topics(), partitions=self.get_partitions(), replication=self.get_replication(), min_insync_replicas=self.get_min_insync_replicas())
+        self._source_topics = ['AVM.processing.autobus.data.termic', 'AVM.processing.autobus.data.hybrid',
+                        'AVM.processing.autobus.data.electric']
+        self._create_topic_if_not_exist(topics=self.get_source_topics(), partitions=self.get_partitions(), replication=self.get_replication(), min_insync_replicas=self.get_min_insync_replicas())
+        
+        self._sink_topics = ['AVM.processing.autobus.dashboard']
+        self._create_topic_if_not_exist(topics=self.get_sink_topics(), partitions=self.get_partitions(), replication=self.get_replication(), min_insync_replicas=self.get_min_insync_replicas())
 
     # Setup Kafka - metodo necessario alla creazione dell'admin Kafka specificando bootstrap servers a cui deve
     # avvenire la connessione e client_id
@@ -252,9 +312,13 @@ class EdgeProcessing:
     def get_flink_env(self):
         return self._flink_env
 
-    # Getter 'topics' parameter
-    def get_topics(self):
-        return self._topics.copy()
+    # Getter 'source_topics' parameter
+    def get_source_topics(self):
+        return self._source_topics.copy()
+
+    # Getter 'sink_topics' parameter
+    def get_sink_topics(self):
+        return self._sink_topics.copy()
 
     # Getter 'ranges' parameter
     def get_ranges(self):
@@ -374,6 +438,42 @@ class EdgeProcessing:
             sys.stderr.write("Errore!\n")
             sys.exit(-10)
 
+    # Metodo sink_to_dashboard - necessario per la scrittura all'interno del topic Kafka specifica per il job Flink
+    # che esegue al di sopra della JVM, per cui necessita di diverse informazioni che normalmente in Python non sarebbero
+    # necessarie, come ad esempio il 'KafkaRecordSerializationSchema'
+    def _define_sink_to_dashboard(self, topic: str, kafka_brokers: str):
+        if type(topic) is not str:
+            raise TypeError(f"Errore! Il tipo del parametro 'topic' passato deve essere 'str'. Ricevuto {type(topic)}")
+
+        if type(kafka_brokers) is not str:
+            raise TypeError(f"Errore! Il tipo del parametro 'kafka_brokers' passato deve essere 'str'. Ricevuto {type(kafka_brokers)}")
+        
+        # Setup stringa rappresentante l'id del gruppo di cui fa parte il Kafka sink
+        group_id = "AVM_dashboarding_producer_group"
+
+        # Setup dello schema di serializzazione necessario per serializzare e comunicare l'oggetto attraverso il sink Kafka
+        # verso il topic desiderato
+        record_serializer = KafkaRecordSerializationSchema.builder() \
+            .set_topic(topic=topic) \
+            .set_value_serialization_schema(SimpleStringSchema()) \
+            .build()
+
+        # Setup del sink Kafka specificando:
+        #   --> record_serializer
+        #   --> bootstrap_servers
+        #   --> property
+        #   --> delivery_guarantee
+        kafka_sink = (
+            KafkaSink.builder()
+            .set_record_serializer(record_serializer)
+            .set_bootstrap_servers(kafka_brokers)
+            .set_property("group.id", group_id)
+            .set_delivery_guarantee(DeliveryGuarantee.AT_LEAST_ONCE)
+            .build()
+        )
+
+        return kafka_sink
+
     # Metodo process - metodo necessario al fine di predisporre il data stream, ricevuto in ingresso attraverso la
     # Kafka source, per il processamento di quest'ultimo. Eseguite le operazoni di:
     #   --> map
@@ -385,14 +485,38 @@ class EdgeProcessing:
         # Setup parametri necessari
         #   --> topics
         #   --> environment Flink
-        #   --> borkers Kafka
-        topics = self.get_topics()
+        #   --> brokers Kafka
+        source_topics = self.get_source_topics()
+        sink_topics = self.get_sink_topics()
         env = self.get_flink_env()
 
+        # Setup stringa dei brokers Kafka comma separated da inserire come bootstrap_servers all'interno del Kafka
+        # source / sink
         brokers = self.get_brokers_kafka()
         bootstrap_servers = ""
         for broker in brokers:
             bootstrap_servers = bootstrap_servers + broker + ","
+
+        # Setup sink per la scrittura dei data stream all'interno dei topic appropriati al fine di presentazione di una 
+        # dashboard live di reporting dei dati ricevuti e di eventuali allarmi
+        kafka_sinks = {}
+        for topic in sink_topics:
+            topic_levels = topic.split(".")
+
+            # Formazione entry dizionario con coppia key - value:
+            #   --> key: ultimo livello del topic considerato
+            #   --> value: sink verso il topic desiderato
+            sink = {
+                topic_levels[-1] : self._define_sink_to_dashboard(topic=topic, kafka_brokers=bootstrap_servers)
+            }
+
+            kafka_sinks.update(sink)
+
+        # Setup informazioni di tipo contenute nel data stream a posteriori del map in JSON dei risultati ricevuti in 
+        # seguito al processamento, per cui windowing, calcolo medie, conteggio di status failure ed eventuali allarmi.
+        # Fondamentale per comunicare il tipo di dati contenuto nel data stream tra un data stream e l'altro, senza questa
+        # informazione il tipo non viene rilevato automaticamente e di conseguenza comporta un fallimento
+        type_info = Types.STRING()
 
         # Setup stringa rappresentante l'id del gruppo di cui fa parte la Kafka source
         group_id = "AVM_processing_consumer_group"
@@ -407,7 +531,7 @@ class EdgeProcessing:
         # le partizioni dei topic Kafka
         kafka_source = (
             KafkaSource.builder()
-            .set_topics(*topics)
+            .set_topics(*source_topics)
             .set_value_only_deserializer(SimpleStringSchema())
             .set_properties({'group.id': group_id})
             .set_bootstrap_servers(bootstrap_servers=bootstrap_servers)
@@ -439,23 +563,28 @@ class EdgeProcessing:
             .key_by(lambda d: d['license_plate'], key_type=Types.STRING()) \
             .window(SlidingEventTimeWindows.of(Time.seconds(60), Time.seconds(5))) \
             .allowed_lateness(time_ms=90000) \
-            .process(MyProcessWindowFunction())
+            .process(MyProcessWindowFunction(tp_thres=tp_thres, bs_thres=bs_thres, es_thres=es_thres, bt_thres=bt_thres))
         )
 
         # Stampa dei risultati con utilizzo del suffisso per ogni dato presente nel data stream
+        # Predisposizione sinking verso il sink Kafka appropriato
         ds_windowed_processed.print("Dati di telemetria nella finestra di interesse:\n")
+        # Serializzazione JSON e specifica dell'output type ('type_info') attraverso l'operazione di mapping
+        ds_windowed_processed_json = ds_windowed_processed.map(lambda s: json.dumps(s), output_type=type_info)
+        # Sinking
+        ds_windowed_processed_json.sink_to(kafka_sinks["dashboard"])
 
         # Filtraggio dati di pressione delle gomme --> ALLARME se al di sotto di 'tp_thres'
-        ds_filtered_tyre_press = ds_windowed_processed.filter(lambda rec: rec.get('avg_tyre_press', 0) is not None and rec.get('avg_tyre_press', 0) <= tp_thres)
+        ds_filtered_tyre_press = ds_windowed_processed.filter(lambda rec: rec.get('alarm_tyre_press') is not None and rec.get('alarm_tyre_press', False) is True)
 
-        # Filtraggio dati di stato del motore --> ALLARME se al di sotto di 'es_thres'
-        ds_filtered_engine_stat = ds_windowed_processed.filter(lambda rec: rec.get('count_engine_stat', 0) >= es_thres)
+        # Filtraggio dati di stato del motore --> ALLARME se al di sopra di 'es_thres'
+        ds_filtered_engine_stat = ds_windowed_processed.filter(lambda rec: rec.get('alarm_engine_stat', False) is True)
 
-        # Filtraggio dati di stato dell'impianto frenante --> ALLARME se al di sotto di 'bs_thres'
-        ds_filtered_brake_stat = ds_windowed_processed.filter(lambda rec: rec.get('count_brake_stat', 0) >= bs_thres)
+        # Filtraggio dati di stato dell'impianto frenante --> ALLARME se al di sopra di 'bs_thres'
+        ds_filtered_brake_stat = ds_windowed_processed.filter(lambda rec: rec.get('alarm_brake_stat', False) is True)
 
         # Filtraggio dati di temperatura delle batterie --> ALLARME se al di sopra di 'bt_thres'
-        ds_filtered_battery_temp = ds_windowed_processed.filter(lambda rec: rec.get('avg_battery_temp', 0) is not None and rec.get('avg_battery_temp', 0) >= bt_thres)
+        ds_filtered_battery_temp = ds_windowed_processed.filter(lambda rec: rec.get('alarm_battery_temp') is not None and rec.get('alarm_battery_temp', False) is True)
 
         # Stampa degli eventuali risultati filtrati con utilizzo del suffisso per ogni dato presente nel data stream
         ds_filtered_tyre_press.print(f"Dati di telemetria la cui pressione delle gomme mediata non supera i {tp_thres} bar:\n")
@@ -476,9 +605,9 @@ class EdgeProcessing:
             # Chiusura environment Flink
             self.get_flink_env().close()
         except Exception:
-            print(f"\nCessazione connessione al broker Kafka / all'environment Flink fallita")
+            sys.stderr.write(f"\nCessazione connessione al broker Kafka / all'environment Flink fallita\n\n")
         else:
-            print(f"\nConnessione al broker Kafka e connessione all'environment Flink interrotte correttamente")
+            print(f"\nConnessione al broker Kafka e connessione all'environment Flink interrotte correttamente\n")
 
 
 # Check CMD Line Arguments - verifica dei parametri passati da linea di comando, in particolare relativi ai broker Kafka; per
