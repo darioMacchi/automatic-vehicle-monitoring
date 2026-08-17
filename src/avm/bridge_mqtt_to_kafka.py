@@ -327,9 +327,14 @@ class BridgeMQTTKafka:
     def _on_message(self, client: mqtt.Client, userdata: dict, msg: mqtt.MQTTMessage):
         # Conversione MQTT topic a Kafka topic (rimpiazzo / con .)
         kafka_topic = msg.topic.replace("/", ".")
-        # Formazione Kafka topic a cui inviare i dati da processare (rimpiazzo 'telemetry' con 'processing')
+        # Formazione Kafka topic a cui inviare i dati da processare (rimpiazzo 'telemetry' con 'processing' e inserimento di
+        # un livello in più, ossia 'data' al di sopra della tipologia di motorizzazione)
         # --> ramificazione differente nell'albero dei topic
-        flink_kafka_topic = kafka_topic.replace("telemetry", "processing")
+        flink_kafka_topic_temp = kafka_topic.replace("telemetry", "processing")
+        elements_flink_kafka_topic = flink_kafka_topic_temp.split(".")
+        elements_flink_kafka_topic.insert(-1, "data")
+        delim = "."
+        flink_kafka_topic = delim.join(elements_flink_kafka_topic)
         payload = json.loads(msg.payload.decode())
         # TODO
         # Rivedere dimensionamento 
@@ -338,8 +343,8 @@ class BridgeMQTTKafka:
         # Creazione del topic di telemetria nel cluster Kafka con i parametri di config appropriati
         self._create_topic_if_not_exist(topic=kafka_topic, partitions=self.get_partitions(), replication=self.get_replication(), min_insync_replicas=self.get_min_insync_replicas())
 
-        # Creazione del topic di processing nel cluster Kafka con i parametri di config di default
-        self._create_topic_if_not_exist(topic=flink_kafka_topic)
+        # Creazione del topic di processing nel cluster Kafka con i parametri di config di appropriati (partitions a default)
+        self._create_topic_if_not_exist(topic=flink_kafka_topic, replication=self.get_replication(), min_insync_replicas=self.get_min_insync_replicas())
 
         # Verifica messaggio duplicato
         if msg.dup:
