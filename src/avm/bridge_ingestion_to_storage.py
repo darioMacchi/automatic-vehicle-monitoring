@@ -35,11 +35,6 @@ def signal_handler(sig_num: int, frame):
 # autobus
 class BridgeIngestionStorage:
     def __init__(self, brokers_kafka: list[str]) -> None:
-        # Topics declaration
-        self._topics_to_subscribe = ["AVM.telemetry.autobus.termic",
-                            "AVM.telemetry.autobus.hybrid",
-                            "AVM.telemetry.autobus.electric"]
-
         # Setup Kafka
         self._brokers_kafka = brokers_kafka.copy()
         self._partitions = 2
@@ -47,19 +42,17 @@ class BridgeIngestionStorage:
         self._min_insync_replicas = 2
         self._kafka_consumer, self._kafka_admin = self._consumer_admin_setup()
 
-    # Metodo consumer_admin_setup(.) - dedito alla configurazione e istanziazione degli oggetti Consumer e AdminClient, e
-    # subscription ai topic di interesse per l'oggetto Consumer. Viene integrata una logica per quanto riguarda gli ID degli
-    # oggetti creati per assicurare che questi abbiano un identificativo univoco nel caso vengano lanciati più processi in cui
-    # esegue lo script. Avviene inoltre la creazione dei topic solamente se assenti dal cluster, questo è il motivo
-    # dell'utilizzo dell'oggetto AdminClient di Kafka
-    def _consumer_admin_setup(self):
-        topics_to_subscribe = self.get_topics_to_subscribe()
-        brokers_kafka = self.get_brokers_kafka()
+        # Topics initialization
+        self._topics_to_subscribe = ["AVM.telemetry.autobus.termic",
+                            "AVM.telemetry.autobus.hybrid",
+                            "AVM.telemetry.autobus.electric"]
+        self._setup_topics()
 
-        # Setup parametri di configurazione topics
-        partitions = self.get_partitions()
-        replication = self.get_replication()
-        min_insync_replicas = self.get_min_insync_replicas()
+    # Metodo consumer_admin_setup() - dedito alla configurazione e istanziazione degli oggetti Consumer e AdminClient.
+    # Viene integrata una logica per quanto riguarda gli ID degli oggetti creati per assicurare che questi abbiano un
+    # identificativo univoco nel caso vengano lanciati più processi in cui esegue lo script
+    def _consumer_admin_setup(self):
+        brokers_kafka = self.get_brokers_kafka()
 
         # Preparazione client_id per producer e admin Kafka
         #   utilizzo di PID + primi 8 caratteri esadecimali di UUID v4
@@ -85,19 +78,30 @@ class BridgeIngestionStorage:
             sys.stderr.write("Errore! Nessun broker disponibile per la connessione\n")
             sys.exit(-6)
         else:
-            # Creazione dei topic di interesse nel momento in cui non sono presenti nel cluster
-            self._create_topics_if_not_exist(admin=admin, topics=topics_to_subscribe, partitions=partitions, replication=replication, min_insync_replicas=min_insync_replicas)
-
-            # Subscription ai topic di interesse
-            consumer.subscribe(topics=topics_to_subscribe)
-
-            # Stampa a video delle subscription dell'oggetto Consumer
-            print("\nSubscriptions:")
-            subs = consumer.subscription()
-            for sub in subs:
-                print(f"\t{sub}")
-
             return consumer, admin
+
+    # Metodo setup_topics() - dedito alla subscription ai topic di interesse per l'oggetto Consumer, inoltre avviene la
+    # creazione dei topic solamente se assenti dal cluster, questo motiva l'utilizzo dell'oggetto AdminClient di Kafka
+    def _setup_topics(self):
+        consumer = self.get_kafka_client()
+        topics_to_subscribe = self.get_topics_to_subscribe()
+
+        # Setup parametri di configurazione topics
+        partitions = self.get_partitions()
+        replication = self.get_replication()
+        min_insync_replicas = self.get_min_insync_replicas()
+
+        # Creazione dei topic di interesse nel momento in cui non siano presenti nel cluster
+        self._create_topics_if_not_exist(topics=topics_to_subscribe, partitions=partitions, replication=replication, min_insync_replicas=min_insync_replicas)
+
+        # Subscription ai topic di interesse
+        consumer.subscribe(topics=topics_to_subscribe)
+
+        # Stampa a video delle subscription dell'oggetto Consumer
+        print("\nSubscriptions:")
+        subs = consumer.subscription()
+        for sub in subs:
+            print(f"\t{sub}")
 
     # Getter 'brokers_kafka' parameter
     def get_brokers_kafka(self):
@@ -130,7 +134,9 @@ class BridgeIngestionStorage:
     # Metodo create_topics_if_not_exist(., ., ., .) - dedito alla creazione dei topic con i parametri desiderati, ossia per
     # fare in modo che il topic sia gestito tra più broker Kafka, con un certo grado di partizione, replica e repliche in-sync
     # (ISR). Verifica se il topic è già presente nel cluster, altrimenti si incarica della creazione
-    def _create_topics_if_not_exist(self, admin: KafkaAdminClient, topics: list[str], partitions=1, replication=1, min_insync_replicas=1):
+    def _create_topics_if_not_exist(self, topics: list[str], partitions=1, replication=1, min_insync_replicas=1):
+        admin = self.get_kafka_admin()
+
         try:
             # Acquisizione topic presenti nel cluster
             topics_created = admin.list_topics()
