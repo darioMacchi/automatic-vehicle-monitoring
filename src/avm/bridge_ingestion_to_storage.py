@@ -1,13 +1,19 @@
+import datetime as dt
 import json
 import os
 import signal
 import sys
 import uuid
+from copy import deepcopy
+from pathlib import Path
 
+import certifi
+from dotenv import load_dotenv
 from kafka import KafkaConsumer
 from kafka.admin import KafkaAdminClient, NewTopic
 from kafka.errors import (KafkaError, NoBrokersAvailable,
                           TopicAlreadyExistsError)
+from pymongo import MongoClient, server_api
 
 
 # Oggetto Bridge Ingestion to Storage
@@ -34,7 +40,7 @@ def signal_handler(sig_num: int, frame):
 # cluster Kafka e opera da bridge verso il MongoDB, ossia il layer di Storage del sistema di monitoraggio telemetria 
 # autobus
 class BridgeIngestionStorage:
-    def __init__(self, brokers_kafka: list[str]) -> None:
+    def __init__(self, brokers_kafka: list[str], mongodb_uri: str) -> None:
         # Setup Kafka
         self._brokers_kafka = brokers_kafka.copy()
         self._partitions = 2
@@ -47,6 +53,10 @@ class BridgeIngestionStorage:
                             "AVM.telemetry.autobus.hybrid",
                             "AVM.telemetry.autobus.electric"]
         self._setup_topics()
+
+        # Setup MongoDB
+        self._mongodb_client = self._setup_mongodb(mongodb_uri=mongodb_uri)
+        self._mongodb_db_name = "AVM_database"
 
     # Metodo consumer_admin_setup() - dedito alla configurazione e istanziazione degli oggetti Consumer e AdminClient.
     # Viene integrata una logica per quanto riguarda gli ID degli oggetti creati per assicurare che questi abbiano un
@@ -103,6 +113,34 @@ class BridgeIngestionStorage:
         for sub in subs:
             print(f"\t{sub}")
 
+    # Metodo setup_mongodb(.) - necessario al fine di creare un client MongoDB utile per la comunicazione verso il cluster
+    # MongoDB remoto, necessari quindi la connection string ('uri') verso il cluster, prelevata dal file di env presente
+    # nel progetto, e la specifica del luogo del certificato TLS/SSL necessario per la connessione sicura
+    def _setup_mongodb(self, mongodb_uri: str):
+        try:
+            # Setup connection string a partire dal 'mongodb_uri' prelevato dal file env, a cui viene concatenata la
+            # option dell'applicazione di default a cui accedere, in questo caso l'unico cluster presente in remoto
+            uri = f"{mongodb_uri}/?appName=Cluster0"
+
+            # Inizializzazione client MongoDB con specifica di:
+            #   --> uri: connection string
+            #   --> tls
+            #   --> tlsCAFile: locazione del certificato TLS/SSL
+            #   --> server_api
+            client = MongoClient(
+                uri,
+                tls=True,
+                tlsCAFile=certifi.where(),
+                server_api=server_api.ServerApi(
+                    version="1", strict=True, deprecation_errors=True
+                )
+            )
+        except Exception as e:
+            sys.stderr.write(f"Errore! Verificato malfunzionamento: {e}\n")
+            sys.exit(-10)
+        else:
+            return client
+
     # Getter 'brokers_kafka' parameter
     def get_brokers_kafka(self):
         return self._brokers_kafka.copy()
@@ -130,6 +168,14 @@ class BridgeIngestionStorage:
     # Getter 'topics_to_subscribe' parameter
     def get_topics_to_subscribe(self):
         return self._topics_to_subscribe.copy()
+
+    # Getter 'mongodb_client' parameter
+    def get_mongodb_client(self):
+        return self._mongodb_client
+
+    # Getter 'mongodb_database' parameter
+    def get_mongodb_db_name(self):
+        return self._mongodb_db_name
 
     # Metodo create_topics_if_not_exist(., ., ., .) - dedito alla creazione dei topic con i parametri desiderati, ossia per
     # fare in modo che il topic sia gestito tra più broker Kafka, con un certo grado di partizione, replica e repliche in-sync
@@ -194,11 +240,54 @@ class BridgeIngestionStorage:
                     # Topic già presente nel cluster, per cui non viene fatta nessuna azione riguardante quest'ultimo
                     print(f"Topic '{topic}' già presente nel cluster")
 
+    # Metodo store(., .) - storage di ogni 'document' all'interno della collection MongoDB con nome 'collection_name'.
+    # Viene reperito / creato il database, successivamente viene reperita la lista di collection contenute al suo interno
+    # e dopo di ché viene verificata la presenza della collection desiderata al suo interno. Successivamente viene
+    # adattato il documento passato per rispettare le regole del formato di docuemnti di MongoDB (BSON) e inserito nella
+    # collection.
+    # Il metodo prevede la restituzione del buon fine o meno dell'operazione di inserimento
+    def _store(self, collection_name: str, document: str):
+        if type(collection_name) is not str:
+            raise TypeError(f"Errore! Il tipo del parametro 'collection_name' passato deve essere 'str'. Ricevuto {type(collection_name)}")
+
+        if type(collection_name) is not str:
+            raise TypeError(f"Errore! Il tipo del parametro 'document' passato deve essere 'str'. Ricevuto {type(document)}")
+
+        # Reperimento db
+        database = self.get_mongodb_client().get_database(name=self.get_mongodb_db_name())
+
+        # Reperimento lista di collection presenti nel db
+        collection_list = database.list_collection_names()
+
+        # Verifica della presenza della collection d'interesse all'interno del db, nel caso in cui sia presente viene
+        # solamente reperita, mentre se non presente viene creata come timeseries collection, con annessa specifica di campo
+        # del timestamp della timeseries, campo di metadati della timeseries e granularità di quest'ultima.
+        # Per la granularità si è inserita quella di più basso livello possibile
+        ts_collection = None
+        if collection_name not in collection_list:
+            ts_collection = database.create_collection(name=collection_name, timeseries={"timeField": "timestamp", "metaField": "metadata", "granularity": "seconds"})
+        else:
+            ts_collection = database.get_collection(name=collection_name)
+
+        # Aggiunta metadati e rimozione della key 'license_plate' che rappresenta proprio i metadata in MongoDB
+        document["metadata"] = {
+            "license_plate": document["license_plate"]
+        }
+        document.pop("license_plate")
+
+        # Adattamento del campo timestamp per essere conforme al formato desiderato da MongoDB
+        document["timestamp"] = dt.datetime.fromtimestamp( document["timestamp"] )
+
+        # Inserimento document all'interno della collection
+        ts_result = ts_collection.insert_one(document=document)
+
+        return ts_result.acknowledged
+
     # Metodo process_messages(.) - processamento di ogni messaggio che viene ricevuto dall'oggetto Consumer Kafka, il ciclo
     # contenuto all'interno del metodo consente di rimanere in esecuzione indefinitamente fino all'arrivo di un segnale di
     # interrupt, ossia una volta chiamato il metodo l'esecuzione rimarrà bloccata all'interno del ciclo in attesa di nuovi
-    # messaggi per il Consumer Kafka, nel momento in cui arriva un messaggio vengono mostrate a video alcune informazioni
-    # relative al messaggio:
+    # messaggi per il Consumer Kafka; nel momento in cui arriva un messaggio viene innescata l'operazione di storage e
+    # successivamente vengono mostrate a video alcune informazioni relative al messaggio:
     #   --> topic di appartenenza
     #   --> partizione di appartenenza
     #   --> offset a cui è presente il messaggio all'interno della partizione di appartenenza
@@ -213,6 +302,15 @@ class BridgeIngestionStorage:
             json_formatted_payload = msg.value.decode()
             payload = json.loads(json_formatted_payload)
 
+            # Preparazione nome collection MongoDB
+            collection_name = msg.topic.replace(".", "_")
+
+            # Storage documento elaborato
+            if self._store(collection_name=collection_name, document=deepcopy(payload)):
+                print(f"Inserimento del documento all'interno della collection {collection_name} RIUSCITO")
+            else:
+                sys.stderr.write(f"Inserimento del documento all'interno della collection {collection_name} FALLITO\n")
+
             print(f"Topic: {msg.topic}")
             print(f"Partition: {msg.partition}")
             print(f"Offset: {msg.offset}")
@@ -222,8 +320,8 @@ class BridgeIngestionStorage:
             print(f"\t{msg.headers[0][0]}: {msg.headers[0][1].decode()}\n")
 
     # Stop method - prevede lo stop del bridge a seguito della ricezione di un segnale SIGINT (CTRL+C), per una 
-    # graceful disconnection viene eseguita la chiusura del consumer e dell'admin Kafka con il metodo close(.), inoltre 
-    # viene stampato a video un messaggio di informazione
+    # graceful disconnection viene eseguita la chiusura del consumer e dell'admin Kafka con il metodo close(.), e del
+    # client MongoDB con il metodo close(), inoltre viene stampato a video un messaggio di informazione
     def stop_bridge(self):
         close_timeout = 5000
         
@@ -232,10 +330,13 @@ class BridgeIngestionStorage:
             self.get_kafka_client().close(timeout_ms=close_timeout)
             # Chiusura admin
             self.get_kafka_admin().close()
+
+            # Chiusura MongoDB client
+            self.get_mongodb_client().close()
         except Exception:
-            sys.stderr.write("\nErrore! Cessazione connessione al broker Kafka fallita\n\n")
+            sys.stderr.write("\nErrore! Cessazione connessione al broker Kafka / cluster MongoDB fallita\n\n")
         finally:
-            print(f"\nConnessione al broker Kafka interrotta correttamente\n")
+            print(f"\nConnessione a broker Kafka e cluster MongoDB interrotte correttamente\n")
 
 
 # Check CMD Line Arguments - verifica dei parametri passati da linea di comando, in particolare relativi a host e porta
@@ -286,6 +387,28 @@ def check_cmd_line_args(brokers_kafka: list[str]):
     return kafka_brokers
 
 
+# Check Environment Variables - metodo necessario alla verifica della presenza delle variabili d'ambiente necessarie al 
+# corretto funzionamento dello script. Prevede il passaggio di una lista di env vars necessarie e restituisce un dizionario
+# contenente coppie key-value con chiave l'env var passata e con value il valore corrispondente a questa (nel momento in cui
+# fosse presente)
+def check_env_vars(vars: list):
+    if type(vars) is not list:
+        raise TypeError(f"Errore! Il tipo del parametro passato deve essere 'list'. Ricevuto {type(vars)}")
+
+    env_vars = {}
+
+    # Per ognuna delle variabili d'ambiente passate viene prelevato il valore corrispondente se presente, altrimenti viene
+    # alzata un'eccezione 'ValueError'
+    for var in vars:
+        value = os.getenv(var)
+        if not value:
+            raise ValueError(f"Errore! {var} non trovata nel file env")
+
+        env_vars.update({var: value})
+
+    return env_vars
+
+
 # Metodo main() - consente di controllare gli argomenti passati da linea di comando (CLI), ed eseguire il setup dell'oggetto
 # Bridge Ingestion to Storage. Successivamente avviene l'elaborazione dei messaggi ricevuti dall'oggetto di bridging
 def main():
@@ -299,6 +422,14 @@ def main():
     # Verifica validità indirizzi broker Kafka
     brokers_kafka = check_cmd_line_args(brokers_kafka=sys.argv[1:].copy())
 
+    # Caricamento file di environment
+    project_root = Path(__file__).resolve().parents[2]
+    env_path = project_root / ".env"
+    load_dotenv(dotenv_path=env_path)
+
+    # Verifica robusta della presenza della variabile di environment necessaria
+    env_vars = check_env_vars(["MONGODB_URI"])
+
     # Installazione handler del segnale CTRL+C
     signal.signal(signalnum=signal.SIGINT, handler=signal_handler)
 
@@ -306,7 +437,7 @@ def main():
     global bridge_ingestion_to_storage
 
     # Instanziazione dell'oggetto Bridge Ingestion to Storage
-    bridge_ingestion_to_storage = BridgeIngestionStorage(brokers_kafka=brokers_kafka)
+    bridge_ingestion_to_storage = BridgeIngestionStorage(brokers_kafka=brokers_kafka, mongodb_uri=env_vars["MONGODB_URI"])
 
     print("\nConsumer in esecuzione...\n")
 
