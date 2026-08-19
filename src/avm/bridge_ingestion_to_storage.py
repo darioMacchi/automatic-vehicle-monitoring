@@ -246,12 +246,12 @@ class BridgeIngestionStorage:
     # adattato il documento passato per rispettare le regole del formato di docuemnti di MongoDB (BSON) e inserito nella
     # collection.
     # Il metodo prevede la restituzione del buon fine o meno dell'operazione di inserimento
-    def _store(self, collection_name: str, document: str):
+    def _store(self, collection_name: str, document: dict):
         if type(collection_name) is not str:
             raise TypeError(f"Errore! Il tipo del parametro 'collection_name' passato deve essere 'str'. Ricevuto {type(collection_name)}")
 
-        if type(collection_name) is not str:
-            raise TypeError(f"Errore! Il tipo del parametro 'document' passato deve essere 'str'. Ricevuto {type(document)}")
+        if type(document) is not dict:
+            raise TypeError(f"Errore! Il tipo del parametro 'document' passato deve essere 'dict'. Ricevuto {type(document)}")
 
         # Reperimento db
         database = self.get_mongodb_client().get_database(name=self.get_mongodb_db_name())
