@@ -4,9 +4,11 @@ import signal
 import socket
 import sys
 import uuid
+from pathlib import Path
 
 import paho.mqtt.client as mqtt
 import paho.mqtt.reasoncodes as mqttrc
+from dotenv import load_dotenv
 from kafka import KafkaProducer
 from kafka.admin import KafkaAdminClient, NewTopic
 from kafka.errors import (KafkaError, KafkaTimeoutError, NoBrokersAvailable,
@@ -43,7 +45,7 @@ def signal_handler(sig_num: int, frame):
 # MQTT e opera da bridge verso il broker Kafka, ossia il layer di Ingestion del sistema di monitoraggio telemetria 
 # autobus
 class BridgeMQTTKafka:
-    def __init__(self, host_mqtt: str, port_mqtt: int, brokers_kafka: list[str]) -> None:
+    def __init__(self, host_mqtt: str, port_mqtt: int, brokers_kafka: list[str], flink_connector_kafka_jar: str) -> None:
         # MQTT setup
         self._host_mqtt = host_mqtt
         self._port_mqtt = port_mqtt
@@ -57,7 +59,7 @@ class BridgeMQTTKafka:
         self._min_insync_replicas = 2
 
         # Flink setup
-        self._flink_env = self._setup_flink_env()
+        self._flink_env = self._setup_flink_env(flink_connector=flink_connector_kafka_jar)
 
     # Setup MQTT - metodo necessario alla creazione del client MQTT specificando versione delle callback, client_id 
     # e sessione persistente. Vengono inoltre specificate le relative callback necessarie ai fini di corretta gestione
@@ -129,10 +131,10 @@ class BridgeMQTTKafka:
 
     # Setup Flink - metodo necessario per l'apertura della connessione dell'environment Flink e l'aggiunta dell'archivio
     # Java (JAR) che contiene la libreria necessaria per sfruttare i plugin di Kafka messi a dispozione da parte di Flink
-    def _setup_flink_env(self):
+    def _setup_flink_env(self, flink_connector: str):
         try:
             flink_env = StreamExecutionEnvironment.get_execution_environment()
-            flink_env.add_jars("file:///absolute-path/to/flink-1.20.3/lib/flink-sql-connector-kafka-3.3.0-1.20.jar")
+            flink_env.add_jars(flink_connector)
         except Exception:
             sys.stderr.write("Errore! Impossibile aprire la connessione verso l'environment Flink\n")
             sys.exit(-13)
@@ -536,6 +538,28 @@ def check_cmd_line_args(host_mqtt: str, port_mqtt: str, brokers_kafka: list[str]
     return mqtt_host, mqtt_port, kafka_brokers
 
 
+# Check Environment Variables - metodo necessario alla verifica della presenza delle variabili d'ambiente necessarie al 
+# corretto funzionamento dello script. Prevede il passaggio di una lista di env vars necessarie e restituisce un dizionario
+# contenente coppie key-value con chiave l'env var passata e con value il valore corrispondente a questa (nel momento in cui
+# fosse presente)
+def check_env_vars(vars: list):
+    if type(vars) is not list:
+        raise TypeError(f"Errore! Il tipo del parametro passato deve essere 'list'. Ricevuto {type(vars)}")
+
+    env_vars = {}
+
+    # Per ognuna delle variabili d'ambiente passate viene prelevato il valore corrispondente se presente, altrimenti viene
+    # alzata un'eccezione 'ValueError'
+    for var in vars:
+        value = os.getenv(var)
+        if not value:
+            raise ValueError(f"Errore! {var} non trovata nel file env")
+
+        env_vars.update({var: value})
+
+    return env_vars
+
+
 # main() method - esecuzione del sistema di bridging tra MQTT e Kafka relativo agli autobus smart, con controllo dei
 # parametri passati da linea di comando, instanziazione dell'oggetto Bridge e azionamento del meccanismo di funzionamento
 def main():
@@ -554,11 +578,19 @@ def main():
     # Verifica validità indirizzo broker MQTT e indirizzo broker Kafka
     host_mqtt, port_mqtt, brokers_kafka_list = check_cmd_line_args(host_mqtt=sys.argv[1], port_mqtt=sys.argv[2], brokers_kafka=sys.argv[3:].copy())
 
+    # Caricamento file di environment
+    project_root = Path(__file__).resolve().parents[2]
+    env_path = project_root / ".env"
+    load_dotenv(dotenv_path=env_path)
+
+    # Verifica robusta della presenza della variabile di environment necessaria
+    env_vars = check_env_vars(["FLINK_CONNECTOR_KAFKA_JAR"])
+
     # Utilizzo dell'oggetto globale di bridging MQTT to Kafka
     global bridge_mqtt_to_kafka
 
     # Instanziazione dell'oggetto Bridge MQTT to Kafka
-    bridge_mqtt_to_kafka = BridgeMQTTKafka(host_mqtt=host_mqtt, port_mqtt=port_mqtt, brokers_kafka=brokers_kafka_list)
+    bridge_mqtt_to_kafka = BridgeMQTTKafka(host_mqtt=host_mqtt, port_mqtt=port_mqtt, brokers_kafka=brokers_kafka_list, flink_connector_kafka_jar=env_vars["FLINK_CONNECTOR_KAFKA_JAR"])
 
     # Messa in esecuzione del bridge
     bridge_mqtt_to_kafka.loop_forever()

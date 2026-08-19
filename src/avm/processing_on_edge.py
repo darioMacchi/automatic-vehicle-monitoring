@@ -3,8 +3,10 @@ import os
 import signal
 import sys
 import uuid
+from pathlib import Path
 from typing import Iterable
 
+from dotenv import load_dotenv
 from kafka.admin import KafkaAdminClient, NewTopic
 from kafka.errors import (KafkaError, NoBrokersAvailable,
                           TopicAlreadyExistsError)
@@ -215,7 +217,7 @@ class MyProcessWindowFunction(ProcessWindowFunction):
 # errore nel caso non siano già presenti nel cluster Kafka; il secondo pensato per eseguire il processing effettivo
 # dell'oggetto. Infine mette a disposizione una graceful disconnection attraverso il metodo di stop apposito
 class EdgeProcessing:
-    def __init__(self, brokers_kafka: list[str]) -> None:
+    def __init__(self, brokers_kafka: list[str], flink_connector_kafka_jar: str) -> None:
         # Kafka setup
         self._brokers_kafka = brokers_kafka.copy()
         self._kafka_admin = self._setup_kafka()
@@ -224,7 +226,7 @@ class EdgeProcessing:
         self._min_insync_replicas = 2
 
         # Flink setup
-        self._flink_env = self._setup_flink_env()
+        self._flink_env = self._setup_flink_env(flink_connector=flink_connector_kafka_jar)
 
         # Parameter thresholds
         self._tyre_pressure_threshold = 2.0
@@ -275,13 +277,13 @@ class EdgeProcessing:
     # Setup Flink - metodo necessario per l'apertura della connessione dell'environment Flink, definire l'intervallo di
     # emissione watermark e l'aggiunta dell'archivio Java (JAR) che contiene la libreria necessaria per sfruttare i
     # plugin di Kafka messi a dispozione da parte di Flink
-    def _setup_flink_env(self):
+    def _setup_flink_env(self, flink_connector: str):
         try:
             flink_env = StreamExecutionEnvironment.get_execution_environment()
             flink_env.set_parallelism(1)
             # Emit watermark ogni 100 ms
             flink_env.get_config().set_auto_watermark_interval(100)
-            flink_env.add_jars("file:///absolute-path/to/flink-sql-connector-kafka-3.3.0-1.20.jar")
+            flink_env.add_jars(flink_connector)
         except Exception:
             sys.stderr.write("Errore! Impossibile aprire la connessione verso l'environment Flink\n")
             sys.exit(-7)
@@ -658,6 +660,28 @@ def check_cmd_line_args(brokers_kafka: list[str]):
     return kafka_brokers
 
 
+# Check Environment Variables - metodo necessario alla verifica della presenza delle variabili d'ambiente necessarie al 
+# corretto funzionamento dello script. Prevede il passaggio di una lista di env vars necessarie e restituisce un dizionario
+# contenente coppie key-value con chiave l'env var passata e con value il valore corrispondente a questa (nel momento in cui
+# fosse presente)
+def check_env_vars(vars: list):
+    if type(vars) is not list:
+        raise TypeError(f"Errore! Il tipo del parametro passato deve essere 'list'. Ricevuto {type(vars)}")
+
+    env_vars = {}
+
+    # Per ognuna delle variabili d'ambiente passate viene prelevato il valore corrispondente se presente, altrimenti viene
+    # alzata un'eccezione 'ValueError'
+    for var in vars:
+        value = os.getenv(var)
+        if not value:
+            raise ValueError(f"Errore! {var} non trovata nel file env")
+
+        env_vars.update({var: value})
+
+    return env_vars
+
+
 # main() method - esecuzione del sistema di edge processing relativo agli autobus smart, con controllo dei parametri
 # passati da linea di comando, instanziazione dell'oggetto Processor e azionamento del meccanismo di funzionamento
 def main():
@@ -674,11 +698,19 @@ def main():
     # Verifica validità indirizzo broker Kafka
     brokers_kafka_list = check_cmd_line_args(brokers_kafka=sys.argv[1:].copy())
 
+    # Caricamento file di environment
+    project_root = Path(__file__).resolve().parents[2]
+    env_path = project_root / ".env"
+    load_dotenv(dotenv_path=env_path)
+
+    # Verifica robusta della presenza della variabile di environment necessaria
+    env_vars = check_env_vars(["FLINK_CONNECTOR_KAFKA_JAR"])
+
     # Utilizzo dell'oggetto globale di edge processing
     global edge_processing
 
     # Instanziazione dell'oggetto Processor
-    edge_processing = EdgeProcessing(brokers_kafka=brokers_kafka_list)
+    edge_processing = EdgeProcessing(brokers_kafka=brokers_kafka_list, flink_connector_kafka_jar=env_vars["FLINK_CONNECTOR_KAFKA_JAR"])
 
     # Messa in esecuzione del processor
     edge_processing.process()

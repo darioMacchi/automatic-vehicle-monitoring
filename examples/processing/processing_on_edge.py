@@ -1,9 +1,12 @@
 import json
 import logging
+import os
 import sys
 import time
+from pathlib import Path
 from typing import Iterable
 
+from dotenv import load_dotenv
 from pyflink.common import Duration, Time, Types, WatermarkStrategy
 from pyflink.common.serialization import SimpleStringSchema
 from pyflink.common.watermark_strategy import TimestampAssigner
@@ -232,10 +235,18 @@ def read_from_kafka_and_compute(env: StreamExecutionEnvironment):
 if __name__ == '__main__':
     logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(message)s")
 
+    project_root = Path(__file__).resolve().parents[2]
+    env_path = project_root / ".env"
+    load_dotenv(dotenv_path=env_path)
+
+    flink_connector_kafka_jar = os.getenv("FLINK_CONNECTOR_KAFKA_JAR")
+    if not flink_connector_kafka_jar:
+        raise ValueError("FLINK_CONNECTOR_KAFKA_JAR non trovata nel file env")
+
     env = StreamExecutionEnvironment.get_execution_environment()
     env.set_parallelism(1)
     env.get_config().set_auto_watermark_interval(100)  # emit watermark ogni 100 ms
-    env.add_jars("file:///absolute-path/to/flink-sql-connector-kafka-3.3.0-1.20.jar")
+    env.add_jars(flink_connector_kafka_jar)
 
     print("start writing data to kafka with sink")
     write_to_kafka_sink(env)
