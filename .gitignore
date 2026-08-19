@@ -5,3 +5,6 @@
 vAVMenv/
 __pycache__/
 *.egg-info/
+
+# Env file to ignore
+.env
