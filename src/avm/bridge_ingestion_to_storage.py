@@ -37,7 +37,7 @@ def signal_handler(sig_num: int, frame):
 
 
 # Oggetto Bridge Ingestion to Storage - permette di avviare un Kafka consumer che recepisce i messaggi provenienti dal
-# cluster Kafka e opera da bridge verso il MongoDB, ossia il layer di Storage del sistema di monitoraggio telemetria 
+# cluster Kafka e opera da bridge verso MongoDB, ossia il layer di Storage del sistema di monitoraggio telemetria 
 # autobus
 class BridgeIngestionStorage:
     def __init__(self, brokers_kafka: list[str], mongodb_uri: str) -> None:
