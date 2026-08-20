@@ -43,15 +43,17 @@ class BridgeIngestionStorage:
     def __init__(self, brokers_kafka: list[str], mongodb_uri: str) -> None:
         # Setup Kafka
         self._brokers_kafka = brokers_kafka.copy()
-        self._partitions = 2
+        self._telemetry_partitions = 2
+        self._processing_partitions = 1
         self._replication = 3
         self._min_insync_replicas = 2
         self._kafka_consumer, self._kafka_admin = self._consumer_admin_setup()
 
         # Topics initialization
-        self._topics_to_subscribe = ["AVM.telemetry.autobus.termic",
+        self._telemetry_topics_to_subscribe = ["AVM.telemetry.autobus.termic",
                             "AVM.telemetry.autobus.hybrid",
                             "AVM.telemetry.autobus.electric"]
+        self._processing_topics_to_subscribe = ["AVM.processing.autobus.storage"]
         self._setup_topics()
 
         # Setup MongoDB
@@ -94,16 +96,22 @@ class BridgeIngestionStorage:
     # creazione dei topic solamente se assenti dal cluster, questo motiva l'utilizzo dell'oggetto AdminClient di Kafka
     def _setup_topics(self):
         consumer = self.get_kafka_client()
-        topics_to_subscribe = self.get_topics_to_subscribe()
+        telemetry_topics_to_subscribe = self.get_telemetry_topics_to_subscribe()
+        processing_topics_to_subscribe = self.get_processing_topics_to_subscribe()
 
         # Setup parametri di configurazione topics
-        partitions = self.get_partitions()
+        telemetry_partitions = self.get_telemetry_partitions()
+        processing_partitions = self.get_processing_partitions()
         replication = self.get_replication()
         min_insync_replicas = self.get_min_insync_replicas()
 
         # Creazione dei topic di interesse nel momento in cui non siano presenti nel cluster
-        self._create_topics_if_not_exist(topics=topics_to_subscribe, partitions=partitions, replication=replication, min_insync_replicas=min_insync_replicas)
+        self._create_topics_if_not_exist(topics=telemetry_topics_to_subscribe, partitions=telemetry_partitions, replication=replication, min_insync_replicas=min_insync_replicas)
+        self._create_topics_if_not_exist(topics=processing_topics_to_subscribe, partitions=processing_partitions, replication=replication, min_insync_replicas=min_insync_replicas)
 
+        # Formazione lista completa di topic di interesse
+        topics_to_subscribe = telemetry_topics_to_subscribe
+        topics_to_subscribe.extend(processing_topics_to_subscribe)
         # Subscription ai topic di interesse
         consumer.subscribe(topics=topics_to_subscribe)
 
@@ -145,9 +153,13 @@ class BridgeIngestionStorage:
     def get_brokers_kafka(self):
         return self._brokers_kafka.copy()
 
-    # Getter 'partitions' parameter
-    def get_partitions(self):
-        return self._partitions
+    # Getter 'telemetry_partitions' parameter
+    def get_telemetry_partitions(self):
+        return self._telemetry_partitions
+
+    # Getter 'processing_partitions' parameter
+    def get_processing_partitions(self):
+        return self._processing_partitions
     
     # Getter 'replication' parameter
     def get_replication(self):
@@ -165,9 +177,13 @@ class BridgeIngestionStorage:
     def get_kafka_admin(self):
         return self._kafka_admin
 
-    # Getter 'topics_to_subscribe' parameter
-    def get_topics_to_subscribe(self):
-        return self._topics_to_subscribe.copy()
+    # Getter 'telemetry_topics_to_subscribe' parameter
+    def get_telemetry_topics_to_subscribe(self):
+        return self._telemetry_topics_to_subscribe.copy()
+
+    # Getter 'processing_topics_to_subscribe' parameter
+    def get_processing_topics_to_subscribe(self):
+        return self._processing_topics_to_subscribe.copy()
 
     # Getter 'mongodb_client' parameter
     def get_mongodb_client(self):
@@ -226,11 +242,12 @@ class BridgeIngestionStorage:
             sys.stderr.write("Errore!\n")
             sys.exit(-9)
         else:
-            # Scorrimento lista topic da creare per verificare quali topic sono stati creati tra i tre prestabiliti,
+            # Scorrimento lista topic da creare per verificare quali topic sono stati creati tra i prestabiliti,
             # ossia:
             #   --> AVM.telemetry.autobus.termic
             #   --> AVM.telemetry.autobus.hybrid
             #   --> AVM.telemetry.autobus.electric
+            #   --> AVM.processing.autobus.storage
             for topic in topics:
                 # Verifica che il topic non sia già stato creato, e quindi presente nel cluster, in questo caso è 
                 # effettivamente stato creato
@@ -243,7 +260,7 @@ class BridgeIngestionStorage:
     # Metodo store(., .) - storage di ogni 'document' all'interno della collection MongoDB con nome 'collection_name'.
     # Viene reperito / creato il database, successivamente viene reperita la lista di collection contenute al suo interno
     # e dopo di ché viene verificata la presenza della collection desiderata al suo interno. Successivamente viene
-    # adattato il documento passato per rispettare le regole del formato di docuemnti di MongoDB (BSON) e inserito nella
+    # adattato il documento passato per rispettare le regole del formato di documenti di MongoDB (BSON) e inserito nella
     # collection.
     # Il metodo prevede la restituzione del buon fine o meno dell'operazione di inserimento
     def _store(self, collection_name: str, document: dict):
@@ -259,6 +276,15 @@ class BridgeIngestionStorage:
         # Reperimento lista di collection presenti nel db
         collection_list = database.list_collection_names()
 
+        # Reperimento key 'type' dai dati, se presente il dato è appartenente al topic di processing, altrimenti appartiene
+        # al topic di telemetria
+        data_type = document.get("type")
+
+        # Verifica 'data_type' valorizzato e presenza della sottostringa 'processing' all'interno del topic, in quel caso viene
+        # aggiunto il tipo di motorizzazione al nome della collection MongoDB
+        if data_type and "processing" in collection_name:
+            collection_name = collection_name + f"_{data_type}"
+
         # Verifica della presenza della collection d'interesse all'interno del db, nel caso in cui sia presente viene
         # solamente reperita, mentre se non presente viene creata come timeseries collection, con annessa specifica di campo
         # del timestamp della timeseries, campo di metadati della timeseries e granularità di quest'ultima.
@@ -269,17 +295,71 @@ class BridgeIngestionStorage:
         else:
             ts_collection = database.get_collection(name=collection_name)
 
-        # Aggiunta metadati e rimozione della key 'license_plate' che rappresenta proprio i metadata in MongoDB
-        document["metadata"] = {
-            "license_plate": document["license_plate"]
-        }
-        document.pop("license_plate")
+        document_to_insert = {}
 
-        # Adattamento del campo timestamp per essere conforme al formato desiderato da MongoDB
-        document["timestamp"] = dt.datetime.fromtimestamp( document["timestamp"] )
+        # Verifica topic di telemetria o topic di processing basato sulla presenza della key 'type' o meno
+        if data_type:
+            # Topic di PROCESSING
 
-        # Inserimento document all'interno della collection
-        ts_result = ts_collection.insert_one(document=document)
+            # Preparazione documento da inserire, formato a partire dal documento ricevuto, con l'adattamento al formato
+            # MongoDB, in cui viene inserito:
+            #   --> timestamp: fine della finestra temporale
+            #   --> metadata: targa dell'autobus smart
+            #   --> window: inizio e fine della finestra temporale dei dati considerati
+            #   --> tyre_pressure
+            #   --> engine_status
+            #   --> brake_status
+            document_to_insert = {
+                "timestamp": dt.datetime.fromtimestamp( document["window_end"] / 1000 ),
+                "metadata": {
+                    "license_plate": document["license_plate"]
+                },
+                "window": {
+                    "start": dt.datetime.fromtimestamp( document["window_start"] / 1000 ),
+                    "end": dt.datetime.fromtimestamp( document["window_end"] / 1000 )
+                },
+                "tyre_pressure": {
+                    "avg": document["avg_tyre_press"],
+                    "alarm": document["alarm_tyre_press"]
+                },
+                "engine_status": {
+                    "count": document["count_engine_stat"],
+                    "alarm": document["alarm_engine_stat"]
+                },
+                "brake_status": {
+                    "count": document["count_brake_stat"],
+                    "alarm": document["alarm_brake_stat"]
+                }
+            }
+    
+            # Verifica del tipo di motorizzazione elettrica o ibrida, e solo in questi due casi aggiunta dei dati 
+            # riguardanti la temperatura del pacco batterie 
+            if data_type == "electric" or data_type == "hybrid":
+                document_to_insert.update(
+                    {
+                        "battery_temperature": {
+                            "avg": document["avg_battery_temp"],
+                            "alarm": document["alarm_battery_temp"]
+                        }
+                    }
+                )
+        else:
+            # Topic di TELEMETRIA
+            
+            # Inizializzazione documento da inserire nella collection MongoDB
+            document_to_insert = document
+
+            # Aggiunta metadati e rimozione della key 'license_plate' che rappresenta proprio i metadata in MongoDB
+            document_to_insert["metadata"] = {
+                "license_plate": document["license_plate"]
+            }
+            document_to_insert.pop("license_plate")
+
+            # Adattamento del campo timestamp per essere conforme al formato desiderato da MongoDB
+            document_to_insert["timestamp"] = dt.datetime.fromtimestamp( document["timestamp"] )
+
+        # Inserimento 'document_to_insert' all'interno della collection
+        ts_result = ts_collection.insert_one(document=document_to_insert)
 
         return ts_result.acknowledged
 
@@ -316,8 +396,13 @@ class BridgeIngestionStorage:
             print(f"Offset: {msg.offset}")
             print(f"Timestamp: {msg.timestamp / 1000.00}")
             print(f"Payload: {payload}")
-            print(f"Headers:")
-            print(f"\t{msg.headers[0][0]}: {msg.headers[0][1].decode()}\n")
+            # Verifica topic da cui sono stati ricevuti i dati, nel caso in cui sia il topic di telemetria l'header
+            # è presente, in caso contrario è assente e quindi non viene visualizzato a video
+            if "processing" not in msg.topic:
+                print(f"Headers:")
+                print(f"\t{msg.headers[0][0]}: {msg.headers[0][1].decode()}\n")
+            else:
+                print()
 
     # Stop method - prevede lo stop del bridge a seguito della ricezione di un segnale SIGINT (CTRL+C), per una 
     # graceful disconnection viene eseguita la chiusura del consumer e dell'admin Kafka con il metodo close(.), e del
