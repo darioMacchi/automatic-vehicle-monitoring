@@ -111,6 +111,7 @@ class MyProcessWindowFunction(ProcessWindowFunction):
         alarm_es = False
         alarm_bs = False
         alarm_bt = False
+        data_type = ""
 
         for element in elements:
             # element è un dict (JSON parsato [deserializzato])
@@ -139,17 +140,22 @@ class MyProcessWindowFunction(ProcessWindowFunction):
             if brake_status in MyProcessWindowFunction.status_failure:
                 count_bs += 1
 
-            # Verifica della presenza di motorizzazione ibrida o elettrica
+            # Verifica della presenza di motorizzazione ibrida o elettrica e assegnazione 'data_type'
             if hybrid is not None or electric is not None:
                 # Nel caso in cui l'autobus smart sia ibrido o elettrico aumento del contatore di dati di temperatura
                 # delle batterie e somma del dato di temperatura delle batterie
                 battery_temp = None
                 if hybrid is not None:
                     battery_temp = element.get('collected_metrics', {}).get('hybrid').get('battery_temperature')
+                    data_type = "hybrid"
                 else:
                     battery_temp = element.get('collected_metrics', {}).get('electric').get('battery_temperature')
+                    data_type = "electric"
+                
                 acc_bt += battery_temp
                 count_bt += 1
+            else:
+                data_type = "termic"
 
         # Calcolo media per pressione delle gomme
         if count_tp > 0:
@@ -173,6 +179,7 @@ class MyProcessWindowFunction(ProcessWindowFunction):
 
         # Predisposizione dato da restituire fornito di:
         #   --> targa
+        #   --> tipo del dato
         #   --> inizio della finestra in considerazione
         #   --> fine della finestra in considerazione
         #   --> media di pressione delle gomme
@@ -183,6 +190,7 @@ class MyProcessWindowFunction(ProcessWindowFunction):
         #   --> allarme di stato dell'impianto frenante
         result = {
             "license_plate": key,
+            "type": data_type,
             "window_start": context.window().start,
             "window_end": context.window().end,
             "avg_tyre_press": round(avg_tp, 4),
@@ -245,7 +253,7 @@ class EdgeProcessing:
                         'AVM.processing.autobus.data.electric']
         self._create_topic_if_not_exist(topics=self.get_source_topics(), partitions=self.get_partitions(), replication=self.get_replication(), min_insync_replicas=self.get_min_insync_replicas())
         
-        self._sink_topics = ['AVM.processing.autobus.dashboard']
+        self._sink_topics = ['AVM.processing.autobus.dashboard', "AVM.processing.autobus.storage"]
         self._create_topic_if_not_exist(topics=self.get_sink_topics(), partitions=self.get_partitions(), replication=self.get_replication(), min_insync_replicas=self.get_min_insync_replicas())
 
     # Setup Kafka - metodo necessario alla creazione dell'admin Kafka specificando bootstrap servers a cui deve
@@ -440,10 +448,10 @@ class EdgeProcessing:
             sys.stderr.write("Errore!\n")
             sys.exit(-10)
 
-    # Metodo sink_to_dashboard - necessario per la scrittura all'interno del topic Kafka specifica per il job Flink
+    # Metodo define_sink - necessario per la scrittura all'interno del topic Kafka specifica per il job Flink
     # che esegue al di sopra della JVM, per cui necessita di diverse informazioni che normalmente in Python non sarebbero
     # necessarie, come ad esempio il 'KafkaRecordSerializationSchema'
-    def _define_sink_to_dashboard(self, topic: str, kafka_brokers: str):
+    def _define_sink(self, topic: str, kafka_brokers: str):
         if type(topic) is not str:
             raise TypeError(f"Errore! Il tipo del parametro 'topic' passato deve essere 'str'. Ricevuto {type(topic)}")
 
@@ -451,7 +459,7 @@ class EdgeProcessing:
             raise TypeError(f"Errore! Il tipo del parametro 'kafka_brokers' passato deve essere 'str'. Ricevuto {type(kafka_brokers)}")
         
         # Setup stringa rappresentante l'id del gruppo di cui fa parte il Kafka sink
-        group_id = "AVM_dashboarding_producer_group"
+        group_id = "AVM_dashboarding_processing_producer_group"
 
         # Setup dello schema di serializzazione necessario per serializzare e comunicare l'oggetto attraverso il sink Kafka
         # verso il topic desiderato
@@ -509,7 +517,7 @@ class EdgeProcessing:
             #   --> key: ultimo livello del topic considerato
             #   --> value: sink verso il topic desiderato
             sink = {
-                topic_levels[-1] : self._define_sink_to_dashboard(topic=topic, kafka_brokers=bootstrap_servers)
+                topic_levels[-1] : self._define_sink(topic=topic, kafka_brokers=bootstrap_servers)
             }
 
             kafka_sinks.update(sink)
@@ -575,6 +583,7 @@ class EdgeProcessing:
         ds_windowed_processed_json = ds_windowed_processed.map(lambda s: json.dumps(s), output_type=type_info)
         # Sinking
         ds_windowed_processed_json.sink_to(kafka_sinks["dashboard"])
+        ds_windowed_processed_json.sink_to(kafka_sinks["storage"])
 
         # Filtraggio dati di pressione delle gomme --> ALLARME se al di sotto di 'tp_thres'
         ds_filtered_tyre_press = ds_windowed_processed.filter(lambda rec: rec.get('alarm_tyre_press') is not None and rec.get('alarm_tyre_press', False) is True)
@@ -598,8 +607,8 @@ class EdgeProcessing:
         env.execute("kafka_sliding_window_process_tp_es_bs_bt")
 
     # Stop method - prevede lo stop del processor a seguito della ricezione di un segnale SIGINT (CTRL+C), per una 
-    # graceful disconnection viene eseguita la chiusura dell'admin Kafka con il metodo close(.), la chiusura dell'environment
-    # Flink, inoltre viene stampato a video un messaggio di informazione
+    # graceful disconnection viene eseguita la chiusura dell'admin Kafka con il metodo close(.), la chiusura
+    # dell'environment Flink, inoltre viene stampato a video un messaggio di informazione
     def stop_processor(self):
         try:
             # Chiusura admin Kafka
