@@ -1,9 +1,10 @@
-import datetime as dt
 import json
 import os
 import signal
 import sys
 import uuid
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from kafka import KafkaConsumer
 from kafka.admin import KafkaAdminClient, NewTopic
@@ -245,7 +246,7 @@ class LiveDashboard:
                     alarm_bs_str = self._to_string_alarm(el["alarm_brake_stat"])
 
                     # Setup parametri da mostrare all'interno della dashboard
-                    row = [f"{el['license_plate']}", str( dt.datetime.fromtimestamp( el["window_start"] / 1000) ), str( dt.datetime.fromtimestamp( el["window_end"] / 1000) ), f"{el['avg_tyre_press']} bar", f"{el['count_engine_stat']}", f"{el['count_brake_stat']}", alarm_tp_str, alarm_es_str, alarm_bs_str]
+                    row = [f"{el['license_plate']}", str( datetime.fromtimestamp( el["window_start"] / 1000 , tz=ZoneInfo("Europe/Rome")) ), str( datetime.fromtimestamp( el["window_end"] / 1000 , tz=ZoneInfo("Europe/Rome")) ), f"{el['avg_tyre_press']} bar", f"{el['count_engine_stat']}", f"{el['count_brake_stat']}", alarm_tp_str, alarm_es_str, alarm_bs_str]
 
                     # Verifica presenza 'avg_battery_temp' e di conseguenza certezza di motorizzazione ibrida o elettrica
                     if el.get("avg_battery_temp") is not None:

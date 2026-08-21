@@ -1,10 +1,10 @@
-import datetime as dt
 import json
 import os
 import signal
 import sys
 import uuid
 from copy import deepcopy
+from datetime import datetime, timezone
 from pathlib import Path
 
 import certifi
@@ -310,13 +310,13 @@ class BridgeIngestionStorage:
             #   --> engine_status
             #   --> brake_status
             document_to_insert = {
-                "timestamp": dt.datetime.fromtimestamp( document["window_end"] / 1000 ),
+                "timestamp": datetime.fromtimestamp( document["window_end"] / 1000 , tz=timezone.utc),
                 "metadata": {
                     "license_plate": document["license_plate"]
                 },
                 "window": {
-                    "start": dt.datetime.fromtimestamp( document["window_start"] / 1000 ),
-                    "end": dt.datetime.fromtimestamp( document["window_end"] / 1000 )
+                    "start": datetime.fromtimestamp( document["window_start"] / 1000 , tz=timezone.utc),
+                    "end": datetime.fromtimestamp( document["window_end"] / 1000 , tz=timezone.utc)
                 },
                 "tyre_pressure": {
                     "avg": document["avg_tyre_press"],
@@ -356,7 +356,7 @@ class BridgeIngestionStorage:
             document_to_insert.pop("license_plate")
 
             # Adattamento del campo timestamp per essere conforme al formato desiderato da MongoDB
-            document_to_insert["timestamp"] = dt.datetime.fromtimestamp( document["timestamp"] )
+            document_to_insert["timestamp"] = datetime.fromtimestamp( document["timestamp"] , tz=timezone.utc)
 
         # Inserimento 'document_to_insert' all'interno della collection
         ts_result = ts_collection.insert_one(document=document_to_insert)
