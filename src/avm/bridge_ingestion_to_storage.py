@@ -14,6 +14,7 @@ from kafka.admin import KafkaAdminClient, NewTopic
 from kafka.errors import (KafkaError, NoBrokersAvailable,
                           TopicAlreadyExistsError)
 from pymongo import MongoClient, server_api
+from pymongo.errors import CollectionInvalid, OperationFailure
 
 
 # Oggetto Bridge Ingestion to Storage
@@ -291,7 +292,23 @@ class BridgeIngestionStorage:
         # Per la granularità si è inserita quella di più basso livello possibile
         ts_collection = None
         if collection_name not in collection_list:
-            ts_collection = database.create_collection(name=collection_name, timeseries={"timeField": "timestamp", "metaField": "metadata", "granularity": "seconds"})
+            # Creazione della collection inserita all'interno di un blocco try-except perché nel momento in cui vengono
+            # eseguiti più processi potrebbe scatenare una race condition, ad esempio un processo sta per creare la
+            # collection ma viene deschedulato subito prima, dopo di cheé viene schedulato un altro processo che crea
+            # esattamente la stessa collection, quando viene rischedulato il primo processo la creazione della collection
+            # fallisce perché esiste già    -->     inserimento nel blocco try-except catturando le eccezioni corrispondenti
+            # a 'collection already exists'
+            try:
+                ts_collection = database.create_collection(name=collection_name, timeseries={"timeField": "timestamp", "metaField": "metadata", "granularity": "seconds"})
+            except CollectionInvalid:
+                print("Collection already exists --> get_collection")
+                ts_collection = database.get_collection(name=collection_name)
+            except OperationFailure as e:
+                if getattr(e, "code", None) == 48:
+                    print("Collection already exists --> get_collection")
+                    ts_collection = database.get_collection(name=collection_name)
+                else:
+                    raise
         else:
             ts_collection = database.get_collection(name=collection_name)
 
