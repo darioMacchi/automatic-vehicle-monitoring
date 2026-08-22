@@ -42,6 +42,25 @@ def signal_handler(sig_num: int, frame):
     sys.exit(0)
 
 
+# Metodo parse_event(.) - necessario per l'elaborazione dei dati provenienti dal sistema di telemetria per la 
+# predisposizione e l'aggiunta all'interno del dato del timestamp da assegnare all'evento nell'ecosistema Flink,
+# in modo che sia corretta l'elaborazione da parte della finestra temporale
+def parse_event(raw: str):
+    try:
+        # Deserializzazione contenuto
+        event = json.loads(raw)
+        # Estrazione del campo 'timestamp'
+        timestamp = float(event["timestamp"])
+    except Exception as e:
+        print(f"Errore! Errore di parsing={e} value={raw}")
+        timestamp = 0.0
+
+    # Predisposizione e inserimento nell'oggetto del timestamp in millisecondi [ms] da assegnare
+    event["_event_ts_ms"] = ( int(timestamp * 1000) if timestamp < 1e12 else int(timestamp) )
+
+    return event
+
+
 # MyTimestampAssigner - classe necessaria per l'assegnamento del corretto timestamp a tutti gli oggetti ricevuti nel 
 # datastream, che sarà il timestamp presente all'interno del dato di telemetria ricevuto in modo da abilitare un processing
 # all'event time
@@ -49,19 +68,7 @@ class MyTimestampAssigner(TimestampAssigner):
 
     # Metodo extract_timestamp - permette di estrapolare il timestamp dal dato di telemetria
     def extract_timestamp(self, value, record_timestamp) -> int:
-        try:
-            # Deserializzazione contenuto
-            payload = json.loads(value) if isinstance(value, str) else value
-            # Estrazione del campo 'timestamp'
-            ts_field = payload.get("timestamp")
-            ts = float(ts_field) if ts_field is not None else 0.0
-        except Exception as e:
-            print(f"Errore! Errore di parsing={e} value={value}")
-            ts_field = None
-            ts = 0.0
-
-        # Predisposizione timestamp in millisecondi [ms] da assegnare
-        ts_ms = int(ts * 1000) if ts < 1e12 else int(ts)
+        ts_ms = value["_event_ts_ms"]
 
         return ts_ms
 
@@ -550,22 +557,28 @@ class EdgeProcessing:
         )
 
         # --> for_bounded_out_of_orderness() consente di ammettere messaggi out of order ed attendere questi fino ad un tempo
-        #     massimo passato come argomento
+        #     massimo passato come argomento, inoltre per fare in modo che questo avvenga il watermark è sempre "indietro"
+        #     rispetto al tempo corrente di questa quantità
         # --> with_idleness() consente di ignorare partizioni idle del topic Kafka (per non tenere bloccato il watermark
         #     globale)
-        watermark_strategy = WatermarkStrategy.for_bounded_out_of_orderness(Duration.of_seconds(30)) \
-                                            .with_idleness(Duration.of_seconds(60)) \
+        watermark_strategy = WatermarkStrategy.for_bounded_out_of_orderness(Duration.of_seconds(15)) \
+                                            .with_idleness(Duration.of_seconds(120)) \
                                             .with_timestamp_assigner(MyTimestampAssigner())
 
-        # Assegnamento watermarks basati sul timestamp del dato di telemetria
+        # Creazione data stream a partire dalla source Kafka definita in precedenza, non specifica nessuna strategia per
+        # l'assegnazione dei watermark perché specificata in seguito associata ad ogni messaggio proveniente dal data stream
         ds = env.from_source(
             source=kafka_source,
-            watermark_strategy=watermark_strategy,
+            watermark_strategy=WatermarkStrategy.no_watermarks(),
             source_name="kafka_source_for_processing"
         )
 
-        # Parse delle stringhe JSON a dizionari Python
-        ds_parsed = ds.map(lambda s: json.loads(s))
+        # Parse delle stringhe JSON a dizionari Python e assegnamento watermarks basati sul timestamp del dato di telemetria
+        ds_parsed = (
+            ds
+            .map(parse_event)
+            .assign_timestamps_and_watermarks(watermark_strategy)
+        )
 
         # key by license_plate, sliding window dimensionata a 60s, slide 5s, process per window
         ds_windowed_processed = (
@@ -578,7 +591,7 @@ class EdgeProcessing:
 
         # Stampa dei risultati con utilizzo del suffisso per ogni dato presente nel data stream
         # Predisposizione sinking verso il sink Kafka appropriato
-        ds_windowed_processed.print("Dati di telemetria nella finestra di interesse:\n")
+        ds_windowed_processed.print("\nDati di telemetria nella finestra di interesse:\n")
         # Serializzazione JSON e specifica dell'output type ('type_info') attraverso l'operazione di mapping
         ds_windowed_processed_json = ds_windowed_processed.map(lambda s: json.dumps(s), output_type=type_info)
         # Sinking
@@ -598,10 +611,10 @@ class EdgeProcessing:
         ds_filtered_battery_temp = ds_windowed_processed.filter(lambda rec: rec.get('alarm_battery_temp') is not None and rec.get('alarm_battery_temp', False) is True)
 
         # Stampa degli eventuali risultati filtrati con utilizzo del suffisso per ogni dato presente nel data stream
-        ds_filtered_tyre_press.print(f"Dati di telemetria la cui pressione delle gomme mediata non supera i {tp_thres} bar:\n")
-        ds_filtered_engine_stat.print("Dati di telemetria il cui stato del motore è in condizioni critiche:\n")
-        ds_filtered_brake_stat.print("Dati di telemetria il cui stato dell'impianto frenante è in condizioni critiche:\n")
-        ds_filtered_battery_temp.print(f"Dati di telemetria la cui temperatura delle batterie mediata supera i {bt_thres} °C:\n")
+        ds_filtered_tyre_press.print(f"\nDati di telemetria la cui pressione delle gomme mediata non supera i {tp_thres} bar:\n")
+        ds_filtered_engine_stat.print("\nDati di telemetria il cui stato del motore è in condizioni critiche:\n")
+        ds_filtered_brake_stat.print("\nDati di telemetria il cui stato dell'impianto frenante è in condizioni critiche:\n")
+        ds_filtered_battery_temp.print(f"\nDati di telemetria la cui temperatura delle batterie mediata supera i {bt_thres} °C:\n")
 
         # Esecuzione del job Flink
         env.execute("kafka_sliding_window_process_tp_es_bs_bt")
