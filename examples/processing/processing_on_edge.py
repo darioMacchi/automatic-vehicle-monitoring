@@ -20,25 +20,29 @@ from pyflink.datastream.window import SlidingEventTimeWindows, TimeWindow
 
 class MyTimestampAssigner(TimestampAssigner):
     def extract_timestamp(self, value, record_timestamp) -> int:
-        try:
-            raw_value = value if isinstance(value, str) else json.dumps(value)
-            payload = json.loads(value) if isinstance(value, str) else value
-            ts_field = payload.get("timestamp")
-            ts = float(ts_field) if ts_field is not None else 0.0
-        except Exception as e:
-            print(f"[TimestampAssigner][ERROR] parse error={e} value={value}")
-            ts_field = None
-            ts = 0.0
+        ts_ms = value["_event_ts_ms"]
 
-        ts_ms = int(ts * 1000) if ts < 1e12 else int(ts)
-
-        now_ms = int(time.time()*1000)
-
-        # stampa di debug utile per capire cosa riceve l'assigner
-        print(f"[TimestampAssigner][DEBUG] raw={raw_value} record_ts={record_timestamp} "
-              f"ts_field={ts_field} -> ts_ms={ts_ms} / now_ms={now_ms}")
+        print(
+            f"[ASSIGNER] license_plate={value.get('license_plate')} "
+            f"payload_ts={value.get('timestamp')} "
+            f"assigned_ts_ms={ts_ms} "
+            f"record_ts={record_timestamp}"
+        )
 
         return ts_ms
+
+
+def parse_event(raw):
+    event = json.loads(raw)
+    timestamp = float(event["timestamp"])
+
+    event["_event_ts_ms"] = (
+        int(timestamp * 1000)
+        if timestamp < 1e12
+        else int(timestamp)
+    )
+
+    return event
 
 
 class WatermarkLogger(KeyedProcessFunction):
@@ -56,6 +60,25 @@ class MyProcessWindowFunction(ProcessWindowFunction):
     status_failure = ["pessimo", "mediocre", "cattivo"]
 
     def process(self, key: str, context: ProcessWindowFunction.Context[TimeWindow], elements: Iterable) -> Iterable:
+        elements = list(elements)
+
+        print(
+            f"[WINDOW] key={key} "
+            f"start={context.window().start} "
+            f"end={context.window().end} "
+            f"events={len(elements)} "
+            f"timestamps={[event.get('timestamp') for event in elements]}"
+        )
+
+        for event in elements:
+            event_ts_ms = event["_event_ts_ms"]
+
+            print(
+                f"[WINDOW-CHECK] event_ts={event_ts_ms} "
+                f"window=[{context.window().start}, {context.window().end}) "
+                f"inside={context.window().start <= event_ts_ms < context.window().end}"
+            )
+
         acc_sp = 0.0
         count_sp = 0
         acc_tp = 0.0
@@ -190,14 +213,17 @@ def read_from_kafka_and_compute(env: StreamExecutionEnvironment):
     # assign watermarks based on the JSON timestamp (with small allowed lateness)
     ds = env.from_source(
         source=kafka_source,
-        # WatermarkStrategy.no_watermarks()
-        watermark_strategy=watermark_strategy,
+        # watermark_strategy
+        watermark_strategy=WatermarkStrategy.no_watermarks(),
         source_name="kafka source"
     )
 
     # parse JSON strings to dicts (timestamp already assigned by TimestampAssigner)
-    # assign_timestamps_and_watermarks(watermark_strategy) \
-    ds_parsed = ds.map(lambda s: json.loads(s))
+    ds_parsed = (
+        ds
+        .map(parse_event)
+        .assign_timestamps_and_watermarks(watermark_strategy)
+    )
 
     # ATTENZIONE --> WatermarkLogger per debug
     ds_parsed.key_by(lambda r: r['license_plate'], key_type=Types.STRING()) \
@@ -223,11 +249,11 @@ def read_from_kafka_and_compute(env: StreamExecutionEnvironment):
     ds_filtered_battery_temp = ds_windowed_processed.filter(lambda rec: rec.get('avg_battery_temp', 0) is not None and rec.get('avg_battery_temp', 0) >= 45.0)
 
     # print or sink the final results
-    ds_filtered_speed.print()
-    ds_filtered_tyre_press.print()
-    ds_filtered_engine_stat.print()
-    ds_filtered_brake_stat.print()
-    ds_filtered_battery_temp.print()
+    ds_filtered_speed.print("FILTRO VELOCITÀ:\n")
+    ds_filtered_tyre_press.print("FILTRO PRESSIONE:\n")
+    ds_filtered_engine_stat.print("FILTRO MOTORE:\n")
+    ds_filtered_brake_stat.print("FILTRO FRENI:\n")
+    ds_filtered_battery_temp.print("FILTRO BATTERIA:\n")
 
     env.execute("kafka_sliding_process_sp_tp_es_bs")
 
