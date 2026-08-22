@@ -4,21 +4,14 @@ import signal
 import socket
 import sys
 import uuid
-from pathlib import Path
 
 import paho.mqtt.client as mqtt
 import paho.mqtt.reasoncodes as mqttrc
-from dotenv import load_dotenv
 from kafka import KafkaProducer
 from kafka.admin import KafkaAdminClient, NewTopic
 from kafka.errors import (KafkaError, KafkaTimeoutError, NoBrokersAvailable,
                           TopicAlreadyExistsError)
 from paho.mqtt.enums import MQTTErrorCode
-from pyflink.common import Types
-from pyflink.common.serialization import SimpleStringSchema
-from pyflink.datastream import StreamExecutionEnvironment
-from pyflink.datastream.connectors.kafka import (
-    DeliveryGuarantee, KafkaRecordSerializationSchema, KafkaSink)
 
 
 # Oggetto Bridge MQTT to Kafka
@@ -45,7 +38,7 @@ def signal_handler(sig_num: int, frame):
 # MQTT e opera da bridge verso il broker Kafka, ossia il layer di Ingestion del sistema di monitoraggio telemetria 
 # autobus
 class BridgeMQTTKafka:
-    def __init__(self, host_mqtt: str, port_mqtt: int, brokers_kafka: list[str], flink_connector_kafka_jar: str) -> None:
+    def __init__(self, host_mqtt: str, port_mqtt: int, brokers_kafka: list[str]) -> None:
         # MQTT setup
         self._host_mqtt = host_mqtt
         self._port_mqtt = port_mqtt
@@ -57,9 +50,6 @@ class BridgeMQTTKafka:
         self._partitions = 2
         self._replication = 3
         self._min_insync_replicas = 2
-
-        # Flink setup
-        self._flink_env = self._setup_flink_env(flink_connector=flink_connector_kafka_jar)
 
     # Setup MQTT - metodo necessario alla creazione del client MQTT specificando versione delle callback, client_id 
     # e sessione persistente. Vengono inoltre specificate le relative callback necessarie ai fini di corretta gestione
@@ -129,18 +119,6 @@ class BridgeMQTTKafka:
         else:
             return kafka_prod, kafka_admin
 
-    # Setup Flink - metodo necessario per l'apertura della connessione dell'environment Flink e l'aggiunta dell'archivio
-    # Java (JAR) che contiene la libreria necessaria per sfruttare i plugin di Kafka messi a dispozione da parte di Flink
-    def _setup_flink_env(self, flink_connector: str):
-        try:
-            flink_env = StreamExecutionEnvironment.get_execution_environment()
-            flink_env.add_jars(flink_connector)
-        except Exception:
-            sys.stderr.write("Errore! Impossibile aprire la connessione verso l'environment Flink\n")
-            sys.exit(-13)
-        else:
-            return flink_env
-
     # Getter 'host_mqtt' parameter
     def get_host_mqtt(self):
         return self._host_mqtt
@@ -177,10 +155,6 @@ class BridgeMQTTKafka:
     def get_kafka_admin(self):
         return self._kafka_admin
 
-    # Getter 'flink_env' parameter
-    def get_flink_env(self):
-        return self._flink_env
-
     # Loop method - chiamata non bloccante che concede di non preoccuparsi di funzionalità utili come la riconnessione
     # automatica al broker MQTT, ma anche il processamento del traffico di rete e della gestione delle callback.
     # Creazione di un thread separato per effettuare queste operazioni
@@ -198,7 +172,7 @@ class BridgeMQTTKafka:
             topics_already_created = admin.list_topics()
         except KafkaError:
             sys.stderr.write("Errore! Impossibile ottenere il listato dei topic presenti nel cluster\n")
-            sys.exit(-14)
+            sys.exit(-13)
 
         # Verifica topic assente all'interno del cluster
         if topic not in topics_already_created:
@@ -223,66 +197,10 @@ class BridgeMQTTKafka:
                 print(f"\nTopic '{topic}' creato\n")
             except TopicAlreadyExistsError:
                 sys.stderr.write("Errore! Impossibile creare un topic che esiste già nel cluster\n")
-                sys.exit(-15)
+                sys.exit(-14)
             except KafkaError:
                 sys.stderr.write("Errore!\n")
-                sys.exit(-16)
-
-    # Metodo write_to_kafka_sink - necessario per la scrittura all'interno dei topic Kafka specifica per il job Flink
-    # che esegue al di sopra della JVM, per cui necessita di diverse informazioni che normalmente in Python non sarebbe
-    # necessario specificare, come ad esempio il 'type_info' e il 'KafkaRecordSerializationSchema'
-    def _write_to_kafka_sink(self, msg: str, topic: str):
-        if type(msg) is not str:
-            raise TypeError(f"Errore! Il tipo del parametro 'msg' passato deve essere 'str'. Ricevuto {type(msg)}")
-
-        if type(topic) is not str:
-            raise TypeError(f"Errore! Il tipo del parametro 'topic' passato deve essere 'str'. Ricevuto {type(topic)}")
-
-        # Setup stringa rappresentante l'id del gruppo di cui fa parte il Kafka sink
-        group_id = "AVM_processing_producer_group"
-        # Setup stringa dei brokers Kafka comma separated da inserire come bootstrap_servers all'interno del Kafka sink
-        kafka_brokers_list = self.get_brokers_kafka()
-        kafka_brokers = ""
-        for broker in kafka_brokers_list:
-            kafka_brokers = kafka_brokers + broker + ","
-
-        env = self.get_flink_env()
-        # Setup 'type_info' necessario per specificare il tipo del dato inviato attraverso il sink Kafka messo
-        # a disposizione da Flink
-        type_info = Types.STRING()
-
-        # Creazione DataStream a partire da una collezione, in questo caso specificando la lista contenente il solo
-        # messaggio da inviare e la specifica del tipo
-        ds = env.from_collection(
-            [msg],
-            type_info=type_info
-        )
-
-        # Setup dello schema di serializzazione necessario per serializzare e comunicare l'oggetto attraverso il sink Kafka
-        # verso il topic desiderato
-        record_serializer = KafkaRecordSerializationSchema.builder() \
-            .set_topic(topic=topic) \
-            .set_value_serialization_schema(SimpleStringSchema()) \
-            .build()
-
-        # Setup del sink Kafka specificando:
-        #   --> record_serializer
-        #   --> bootstrap_servers
-        #   --> property
-        #   --> delivery_guarantee
-        kafka_sink = (
-            KafkaSink.builder()
-            .set_record_serializer(record_serializer)
-            .set_bootstrap_servers(kafka_brokers)
-            .set_property("group.id", group_id)
-            .set_delivery_guarantee(DeliveryGuarantee.AT_LEAST_ONCE)
-            .build()
-        )
-
-        # Predisposizione sinking verso il sink Kafka
-        ds.sink_to(kafka_sink)
-        # Esecuzione del job Flink
-        env.execute("bridge_sinking_kafka_events_to_processing")
+                sys.exit(-15)
 
     # on_subscribe - callback necessaria per il protocollo di comunicazione MQTT per gestire il momento in cui
     # il client riceve una risposta SUBACK dal broker
@@ -338,8 +256,7 @@ class BridgeMQTTKafka:
         delim = "."
         flink_kafka_topic = delim.join(elements_flink_kafka_topic)
         payload = json.loads(msg.payload.decode())
-        # TODO
-        # Rivedere dimensionamento 
+        # Dimensionamento dizionario degli ultimi messaggi
         last = 30
 
         # Creazione del topic di telemetria nel cluster Kafka con i parametri di config appropriati
@@ -373,26 +290,27 @@ class BridgeMQTTKafka:
 
                 # Invio del messaggio verso il broker Kafka con inclusione degli header per indicare l'encoding del
                 # contenuto
-                future = self.get_kafka_client().send(topic=kafka_topic, value=msg.payload, headers=[("content-encoding", b"JSON")])
-
+                future_telemetry = self.get_kafka_client().send(topic=kafka_topic, value=msg.payload, headers=[("content-encoding", b"JSON")])
                 # Invio del messaggio verso il broker Kafka al topic dedito al processing della telemetria ricevuta
-                self._write_to_kafka_sink(msg=msg.payload.decode(), topic=flink_kafka_topic)
+                future_processing = self.get_kafka_client().send(topic=flink_kafka_topic, value=msg.payload, headers=[("content-encoding", b"JSON")])
 
                 try:
                     # Attesa dell'effettivo invio del messaggio
-                    result = future.get(timeout=60)
+                    result_telemetry = future_telemetry.get(timeout=60)
+                    # Attesa dell'effettivo invio del messaggio
+                    result_processing = future_processing.get(timeout=60)
                 except KafkaTimeoutError:
                     sys.stderr.write("\nErrore! Fallita attesa dell'effettivo invio del messaggio, timeout scaduto\n")
                 except KafkaError:
                     sys.stderr.write("\nErrore! Fallita attesa dell'effettivo invio del messaggio\n")
                 else:
-                    print(f"\nMessaggio inoltrato dal topic MQTT {msg.topic} al topic Kafka {kafka_topic}, con offset {result.offset}")
-                    print(f"Sinking evento verso il topic {flink_kafka_topic} attraverso l'environment Flink\n")
+                    print(f"\nMessaggio inoltrato dal topic MQTT {msg.topic} al topic Kafka {kafka_topic}, con offset {result_telemetry.offset}")
+                    print(f"Messaggio inoltrato dal topic MQTT {msg.topic} al topic Kafka {flink_kafka_topic}, con offset {result_processing.offset}\n")
             else:
                 # Il messaggio duplicato è presente nel dizionario degli ultimi 'last' messaggi, quindi è già stato
                 # elaborato
                 print(f"Messaggio già processato e inoltrato dal topic MQTT {msg.topic} al topic Kafka {kafka_topic}")
-                print(f"Sinking evento verso il topic {flink_kafka_topic} attraverso l'environment Flink già avvenuto\n")
+                print(f"Messaggio già processato e inoltrato dal topic MQTT {msg.topic} al topic Kafka {flink_kafka_topic}\n")
         # Messaggio originale
         else:
             # Verifica lunghezza dizionario
@@ -413,26 +331,26 @@ class BridgeMQTTKafka:
 
             # Invio del messaggio verso il broker Kafka con inclusione degli header per indicare l'encoding del
             # contenuto
-            future = self.get_kafka_client().send(topic=kafka_topic, value=msg.payload, headers=[("content-encoding", b"JSON")])
-
+            future_telemetry = self.get_kafka_client().send(topic=kafka_topic, value=msg.payload, headers=[("content-encoding", b"JSON")])
             # Invio del messaggio verso il broker Kafka al topic dedito al processing della telemetria ricevuta
-            self._write_to_kafka_sink(msg=msg.payload.decode(), topic=flink_kafka_topic)
+            future_processing = self.get_kafka_client().send(topic=flink_kafka_topic, value=msg.payload, headers=[("content-encoding", b"JSON")])
 
             try:
                 # Attesa dell'effettivo invio del messaggio
-                result = future.get(timeout=60)
+                result_telemetry = future_telemetry.get(timeout=60)
+                # Attesa dell'effettivo invio del messaggio
+                result_processing = future_processing.get(timeout=60)
             except KafkaTimeoutError:
                     sys.stderr.write("\nErrore! Fallita attesa dell'effettivo invio del messaggio, timeout scaduto\n")
             except KafkaError:
                 sys.stderr.write("\nErrore! Fallita attesa dell'effettivo invio del messaggio\n")
             else:
-                print(f"\nMessaggio inoltrato dal topic MQTT {msg.topic} al topic Kafka {kafka_topic}, con offset {result.offset}")
-                print(f"Sinking evento verso il topic {flink_kafka_topic} attraverso l'environment Flink\n")
+                print(f"\nMessaggio inoltrato dal topic MQTT {msg.topic} al topic Kafka {kafka_topic}, con offset {result_telemetry.offset}")
+                print(f"Messaggio inoltrato dal topic MQTT {msg.topic} al topic Kafka {flink_kafka_topic}, con offset {result_processing.offset}\n")
 
     # Stop method - prevede lo stop del bridge a seguito della ricezione di un segnale SIGINT (CTRL+C), per una 
     # graceful disconnection viene eseguito il metodo disconnect(.) per la disconnessione dal broker MQTT, la chiusura
-    # del producer e dell'admin Kafka con il metodo close(.), la chiusura dell'environment Flink, inoltre viene stampato
-    # a video un messaggio di informazione
+    # del producer e dell'admin Kafka con il metodo close(.), inoltre viene stampato a video un messaggio di informazione
     def stop_bridge(self):
         close_timeout = 5
         flush_timeout = 2.5
@@ -450,13 +368,11 @@ class BridgeMQTTKafka:
 
                 # Chiusura admin Kafka
                 self.get_kafka_admin().close()
-                # Chiusura environment Flink
-                self.get_flink_env().close()
             except Exception:
-                print(f"\nCessazione connessione al broker Kafka / all'environment Flink fallita, e connessione al broker MQTT cessata con ", end="")
+                print(f"\nCessazione connessione al broker Kafka fallita, e connessione al broker MQTT cessata con ", end="")
                 print("successo\n" if err == MQTTErrorCode.MQTT_ERR_SUCCESS else "insuccesso\n")
             else:
-                print(f"\nConnessione al broker Kafka interrotta, connessione all'environment Flink interrotta, e connessione al broker MQTT cessata con ", end="")
+                print(f"\nConnessione al broker Kafka interrotta, e connessione al broker MQTT cessata con ", end="")
                 print("successo\n" if err == MQTTErrorCode.MQTT_ERR_SUCCESS else "insuccesso\n")
 
 
@@ -538,28 +454,6 @@ def check_cmd_line_args(host_mqtt: str, port_mqtt: str, brokers_kafka: list[str]
     return mqtt_host, mqtt_port, kafka_brokers
 
 
-# Check Environment Variables - metodo necessario alla verifica della presenza delle variabili d'ambiente necessarie al 
-# corretto funzionamento dello script. Prevede il passaggio di una lista di env vars necessarie e restituisce un dizionario
-# contenente coppie key-value con chiave l'env var passata e con value il valore corrispondente a questa (nel momento in cui
-# fosse presente)
-def check_env_vars(vars: list):
-    if type(vars) is not list:
-        raise TypeError(f"Errore! Il tipo del parametro passato deve essere 'list'. Ricevuto {type(vars)}")
-
-    env_vars = {}
-
-    # Per ognuna delle variabili d'ambiente passate viene prelevato il valore corrispondente se presente, altrimenti viene
-    # alzata un'eccezione 'ValueError'
-    for var in vars:
-        value = os.getenv(var)
-        if not value:
-            raise ValueError(f"Errore! {var} non trovata nel file env")
-
-        env_vars.update({var: value})
-
-    return env_vars
-
-
 # main() method - esecuzione del sistema di bridging tra MQTT e Kafka relativo agli autobus smart, con controllo dei
 # parametri passati da linea di comando, instanziazione dell'oggetto Bridge e azionamento del meccanismo di funzionamento
 def main():
@@ -578,19 +472,11 @@ def main():
     # Verifica validità indirizzo broker MQTT e indirizzo broker Kafka
     host_mqtt, port_mqtt, brokers_kafka_list = check_cmd_line_args(host_mqtt=sys.argv[1], port_mqtt=sys.argv[2], brokers_kafka=sys.argv[3:].copy())
 
-    # Caricamento file di environment
-    project_root = Path(__file__).resolve().parents[2]
-    env_path = project_root / ".env"
-    load_dotenv(dotenv_path=env_path)
-
-    # Verifica robusta della presenza della variabile di environment necessaria
-    env_vars = check_env_vars(["FLINK_CONNECTOR_KAFKA_JAR"])
-
     # Utilizzo dell'oggetto globale di bridging MQTT to Kafka
     global bridge_mqtt_to_kafka
 
     # Instanziazione dell'oggetto Bridge MQTT to Kafka
-    bridge_mqtt_to_kafka = BridgeMQTTKafka(host_mqtt=host_mqtt, port_mqtt=port_mqtt, brokers_kafka=brokers_kafka_list, flink_connector_kafka_jar=env_vars["FLINK_CONNECTOR_KAFKA_JAR"])
+    bridge_mqtt_to_kafka = BridgeMQTTKafka(host_mqtt=host_mqtt, port_mqtt=port_mqtt, brokers_kafka=brokers_kafka_list)
 
     # Messa in esecuzione del bridge
     bridge_mqtt_to_kafka.loop_forever()
