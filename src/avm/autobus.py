@@ -733,6 +733,9 @@ class Autobus:
         )
         event_msg.pop("happened")
 
+        print("Avvenuto evento di tipo: ", end="")
+        print("SPIA MOTORE" if event_msg["type"] == "enginelight" else "PANIC BUTTON")
+
         # Comunicazione dell'evento di allarme
         self.communicate(alarm=True, topic=topic, message=json.dumps(event_msg))
 
