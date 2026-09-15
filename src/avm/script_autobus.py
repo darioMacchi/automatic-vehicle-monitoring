@@ -2,6 +2,7 @@ import random
 import signal
 import sys
 import time
+from copy import deepcopy
 
 from avm.autobus_elettrico import AutobusElettrico
 from avm.autobus_ibrido import AutobusIbrido
@@ -319,6 +320,10 @@ def main():
     engine_event = {
         "type": "enginelight",
         "license_plate": "",
+        "info_autobus": {
+            "gps": None,
+            "num_psg": None
+        },
         "happened": False,
         "created_at": None
     }
@@ -335,6 +340,10 @@ def main():
     panic_button_event = {
         "type": "panicbutton", 
         "license_plate": "",
+        "info_autobus": {
+            "gps": None,
+            "num_psg": None
+        },
         "happened": False,
         "created_at": None
     }
@@ -451,8 +460,17 @@ def main():
 
         # Verifica avvenimento evento spia motore
         if engine_event["happened"]:
+            # Nel caso in cui l'evento avvenga alla prima iterazione, per evitare di ottenere dati nulli viene effettuata
+            # una simulazione dei dati con 'first_exec' a True, in modo da avere sicuramente i dati di partenza
+            if first_exec:
+               license_plates_in_exec[engine_event["license_plate"]]["list"][license_plates_in_exec[engine_event["license_plate"]]["index"]].simulate(first_exec, fermata_bus)
+
+            # Assegnazione degli ultimi dati di posizione e numero passeggeri dell'autobus di interesse
+            engine_event["info_autobus"]["gps"] = license_plates_in_exec[engine_event["license_plate"]]["list"][license_plates_in_exec[engine_event["license_plate"]]["index"]].get_gps()
+            engine_event["info_autobus"]["num_psg"] = license_plates_in_exec[engine_event["license_plate"]]["list"][license_plates_in_exec[engine_event["license_plate"]]["index"]].get_num_psg()
+
             # Chiamata al metodo di gestione dell'evento dell'autobus selezionato
-            license_plates_in_exec[engine_event["license_plate"]]["list"][license_plates_in_exec[engine_event["license_plate"]]["index"]].handle_critic_events(event_msg=engine_event.copy())
+            license_plates_in_exec[engine_event["license_plate"]]["list"][license_plates_in_exec[engine_event["license_plate"]]["index"]].handle_critic_events(event_msg=deepcopy(engine_event))
 
             # Predispozione liste di targhe per motorizzazione
             termic_lp_list = [autobus.get_LP() for autobus in termic_bus_list]
@@ -509,6 +527,9 @@ def main():
 
             # Reimpostazione dell'avvenimento dell'evento a False, ossia 'non avvenuto'
             engine_event["happened"] = False
+            # Reimpostazione dei dati di posizione e numero passeggeri
+            engine_event["info_autobus"]["gps"] = None
+            engine_event["info_autobus"]["num_psg"] = None
 
             # Pick nuova targa associata all'evento
             try:
@@ -528,8 +549,17 @@ def main():
 
         # Verifica avvenimento evento panic button
         if panic_button_event["happened"]:
+            # Nel caso in cui l'evento avvenga alla prima iterazione, per evitare di ottenere dati nulli viene effettuata
+            # una simulazione dei dati con 'first_exec' a True, in modo da avere sicuramente i dati di partenza
+            if first_exec:
+                license_plates_in_exec[panic_button_event["license_plate"]]["list"][license_plates_in_exec[panic_button_event["license_plate"]]["index"]].simulate(first_exec, fermata_bus)
+
+            # Assegnazione degli ultimi dati di posizione e numero passeggeri dell'autobus di interesse
+            panic_button_event["info_autobus"]["gps"] = license_plates_in_exec[panic_button_event["license_plate"]]["list"][license_plates_in_exec[panic_button_event["license_plate"]]["index"]].get_gps()
+            panic_button_event["info_autobus"]["num_psg"] = license_plates_in_exec[panic_button_event["license_plate"]]["list"][license_plates_in_exec[panic_button_event["license_plate"]]["index"]].get_num_psg()
+
             # Chiamata al metodo di gestione dell'evento dell'autobus selezionato
-            license_plates_in_exec[panic_button_event["license_plate"]]["list"][license_plates_in_exec[panic_button_event["license_plate"]]["index"]].handle_critic_events(event_msg=panic_button_event.copy())
+            license_plates_in_exec[panic_button_event["license_plate"]]["list"][license_plates_in_exec[panic_button_event["license_plate"]]["index"]].handle_critic_events(event_msg=deepcopy(panic_button_event))
 
             # Predispozione liste di targhe per motorizzazione
             termic_lp_list = [autobus.get_LP() for autobus in termic_bus_list]
@@ -586,6 +616,9 @@ def main():
 
             # Reimpostazione dell'avvenimento dell'evento a False, ossia 'non avvenuto'
             panic_button_event["happened"] = False
+            # Reimpostazione dei dati di posizione e numero passeggeri
+            panic_button_event["info_autobus"]["gps"] = None
+            panic_button_event["info_autobus"]["num_psg"] = None
 
             # Pick nuova targa associata all'evento
             try:
