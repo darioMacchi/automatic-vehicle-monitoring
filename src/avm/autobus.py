@@ -77,6 +77,9 @@ class Autobus:
         self._timeout = timeout
         self._host = host
         self._port = port
+
+        # Prefisso del topic a cui inviare gli eventi di allarme
+        self._critic_topic_prefix = "AVM/alarm/autobus"
     
     # on_connect - callback necessaria per il protocollo di comunicazione MQTT per gestire il momento in cui 
     # il client riceve una risposta CONNACK dal server (broker RabbitMQ) - firma prestabilita
@@ -365,6 +368,10 @@ class Autobus:
             raise TypeError(f"Errore! Il tipo del parametro passato deve essere 'str'. Ricevuto {type(formatted_data_to_send)}")
 
         self._formatted_data_to_send = formatted_data_to_send
+
+    # Getter 'critic_topic_prefix' parameter
+    def get_critic_topic_prefix(self):
+        return self._critic_topic_prefix
 
     # Simulazione Metriche - metodo che permette di generare ed aggiornare le metriche da comprendere successivamente nel
     # "pacchetto" dati da inviare, attraverso il protocollo di comunicazione MQTT, al sistema di Ingestion. L'aggiornamento
@@ -708,6 +715,29 @@ class Autobus:
         print("Dati ambientali:")
         print(f"\tTemperatura: {self.get_temperature()} °C")
         print(f"\tUmidità: {self.get_humidity()} %")
+
+    # Gestione Eventi - gestione evento avvenuto sull'autobus comunicando alla centrale operativa l'evento accaduto
+    # e terminando l'esecuzione dell'autobus. Terminazione a seguito dell'evento di spia motore per evitare eventuali
+    # problemi di natura meccanica che potrebbero diventare catastrofici, mentre terminazione a seguito dell'evento di 
+    # panic button per far evacuare i passeggeri presenti a bordo
+    def handle_critic_events(self, event_msg: dict):
+        if type(event_msg) is not dict:
+            raise TypeError(f"Errore! Il tipo del parametro passato deve essere 'dict'. Ricevuto {type(event_msg)}")
+
+        # Finalizzazione topic di allarme a cui inviare l'evento avvenuto
+        topic = self.get_critic_topic_prefix() + "/" + event_msg["type"]
+        event_msg.update(
+            {
+                "timestamp": time.time()
+            }
+        )
+        event_msg.pop("happened")
+
+        # Comunicazione dell'evento di allarme
+        self.communicate(alarm=True, topic=topic, message=json.dumps(event_msg))
+
+        # Fermo dell'autobus a seguito dell'evento accaduto
+        self.stop_autobus()
 
     # Stop Autobus - terminazione delle connnessioni dell'oggetto Autobus, in particolare cessazione della connessione col
     # broker MQTT per la comunicazione, e terminazione del background thread previsto per la gestione del traffico di rete,

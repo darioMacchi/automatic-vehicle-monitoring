@@ -213,11 +213,17 @@ class BridgeMQTTKafka:
             print(f"Il broker ha rifiutato la subscription al topic AVM/telemetry/autobus/hybrid : {reason_code_list[1]}\n")
         elif reason_code_list[2].is_failure:
             print(f"Il broker ha rifiutato la subscription al topic AVM/telemetry/autobus/electric : {reason_code_list[2]}\n")
+        elif reason_code_list[3].is_failure:
+            print(f"Il broker ha rifiutato la subscription al topic AVM/alarm/autobus/enginelight : {reason_code_list[3]}\n")
+        elif reason_code_list[4].is_failure:
+            print(f"Il broker ha rifiutato la subscription al topic AVM/alarm/autobus/panicbutton : {reason_code_list[4]}\n")
         else:
             print(f"Il broker ha messo a disposizione la seguente QoS:")
             print(f"\tAVM/telemetry/autobus/termic : {reason_code_list[0].value}")
             print(f"\tAVM/telemetry/autobus/hybrid : {reason_code_list[1].value}")
             print(f"\tAVM/telemetry/autobus/electric : {reason_code_list[2].value}\n")
+            print(f"\tAVM/alarm/autobus/enginelight : {reason_code_list[3].value}")
+            print(f"\tAVM/alarm/autobus/panicbutton : {reason_code_list[4].value}\n")
 
     # on_connect - callback necessaria per il protocollo di comunicazione MQTT per gestire il momento in cui 
     # il client riceve una risposta CONNACK dal server (broker RabbitMQ) - firma prestabilita
@@ -235,7 +241,7 @@ class BridgeMQTTKafka:
                 # Iscrizione ai topic all'interno della callback on_connect() implica che se la connessione viene persa e
                 # viene effettuata la riconnessione, allora le iscrizioni saranno effettuate di nuovo. Questo assicura che le
                 # iscrizioni siano persistenti alle riconnessioni
-                client.subscribe(topic=[("AVM/telemetry/autobus/termic", 1), ("AVM/telemetry/autobus/hybrid", 1), ("AVM/telemetry/autobus/electric", 1)])
+                client.subscribe(topic=[("AVM/telemetry/autobus/termic", 1), ("AVM/telemetry/autobus/hybrid", 1), ("AVM/telemetry/autobus/electric", 1), ("AVM/alarm/autobus/enginelight", 1), ("AVM/alarm/autobus/panicbutton", 1)])
 
     # on_connect_fail - callback necessaria per il protocollo di comunicazione MQTT per gestire il momento in cui
     # avviene il fallimento nello stabilire una connessione automatica da parte di loop_forever()
@@ -247,23 +253,32 @@ class BridgeMQTTKafka:
     def _on_message(self, client: mqtt.Client, userdata: dict, msg: mqtt.MQTTMessage):
         # Conversione MQTT topic a Kafka topic (rimpiazzo / con .)
         kafka_topic = msg.topic.replace("/", ".")
-        # Formazione Kafka topic a cui inviare i dati da processare (rimpiazzo 'telemetry' con 'processing' e inserimento di
-        # un livello in più, ossia 'data' al di sopra della tipologia di motorizzazione)
-        # --> ramificazione differente nell'albero dei topic
-        flink_kafka_topic_temp = kafka_topic.replace("telemetry", "processing")
-        elements_flink_kafka_topic = flink_kafka_topic_temp.split(".")
-        elements_flink_kafka_topic.insert(-1, "data")
-        delim = "."
-        flink_kafka_topic = delim.join(elements_flink_kafka_topic)
+
+        # Verifica della ricezione di un messaggio da uno dei topic di allarme, in questo caso il messaggio non deve essere
+        # processato, ma solamente memorizzato
+        if "alarm" not in kafka_topic:
+            # Formazione Kafka topic a cui inviare i dati da processare (rimpiazzo 'telemetry' con 'processing' e inserimento di
+            # un livello in più, ossia 'data' al di sopra della tipologia di motorizzazione)
+            # --> ramificazione differente nell'albero dei topic
+            flink_kafka_topic_temp = kafka_topic.replace("telemetry", "processing")
+            elements_flink_kafka_topic = flink_kafka_topic_temp.split(".")
+            elements_flink_kafka_topic.insert(-1, "data")
+            delim = "."
+            flink_kafka_topic = delim.join(elements_flink_kafka_topic)
+
         payload = json.loads(msg.payload.decode())
         # Dimensionamento dizionario degli ultimi messaggi
+        # TODO
         last = 30
 
         # Creazione del topic di telemetria nel cluster Kafka con i parametri di config appropriati
         self._create_topic_if_not_exist(topic=kafka_topic, partitions=self.get_partitions(), replication=self.get_replication(), min_insync_replicas=self.get_min_insync_replicas())
 
-        # Creazione del topic di processing nel cluster Kafka con i parametri di config di appropriati (partitions a default)
-        self._create_topic_if_not_exist(topic=flink_kafka_topic, replication=self.get_replication(), min_insync_replicas=self.get_min_insync_replicas())
+        # Verifica della ricezione di un messaggio da uno dei topic di allarme, in questo caso il messaggio non deve essere
+        # processato, ma solamente memorizzato
+        if "alarm" not in kafka_topic:
+            # Creazione del topic di processing nel cluster Kafka con i parametri di config di appropriati (partitions a default)
+            self._create_topic_if_not_exist(topic=flink_kafka_topic, replication=self.get_replication(), min_insync_replicas=self.get_min_insync_replicas())
 
         # Verifica messaggio duplicato
         if msg.dup:
@@ -291,26 +306,44 @@ class BridgeMQTTKafka:
                 # Invio del messaggio verso il broker Kafka con inclusione degli header per indicare l'encoding del
                 # contenuto
                 future_telemetry = self.get_kafka_client().send(topic=kafka_topic, value=msg.payload, headers=[("content-encoding", b"JSON")])
-                # Invio del messaggio verso il broker Kafka al topic dedito al processing della telemetria ricevuta
-                future_processing = self.get_kafka_client().send(topic=flink_kafka_topic, value=msg.payload, headers=[("content-encoding", b"JSON")])
+                # Verifica della ricezione di un messaggio da uno dei topic di allarme, in questo caso il messaggio non deve
+                # essere processato, ma solamente memorizzato
+                if "alarm" not in kafka_topic:
+                    # Invio del messaggio verso il broker Kafka al topic dedito al processing della telemetria ricevuta
+                    future_processing = self.get_kafka_client().send(topic=flink_kafka_topic, value=msg.payload, headers=[("content-encoding", b"JSON")])
 
                 try:
                     # Attesa dell'effettivo invio del messaggio
                     result_telemetry = future_telemetry.get(timeout=60)
-                    # Attesa dell'effettivo invio del messaggio
-                    result_processing = future_processing.get(timeout=60)
+                    # Verifica della ricezione di un messaggio da uno dei topic di allarme, in questo caso il messaggio non
+                    # deve essere processato, ma solamente memorizzato
+                    if "alarm" not in kafka_topic:
+                        # Attesa dell'effettivo invio del messaggio
+                        result_processing = future_processing.get(timeout=60)
                 except KafkaTimeoutError:
                     sys.stderr.write("\nErrore! Fallita attesa dell'effettivo invio del messaggio, timeout scaduto\n")
                 except KafkaError:
                     sys.stderr.write("\nErrore! Fallita attesa dell'effettivo invio del messaggio\n")
                 else:
                     print(f"\nMessaggio inoltrato dal topic MQTT {msg.topic} al topic Kafka {kafka_topic}, con offset {result_telemetry.offset}")
-                    print(f"Messaggio inoltrato dal topic MQTT {msg.topic} al topic Kafka {flink_kafka_topic}, con offset {result_processing.offset}\n")
+                    # Verifica della ricezione di un messaggio da uno dei topic di allarme, in questo caso il messaggio non
+                    # deve essere processato, ma solamente memorizzato, per cui la stampa che riguarda il topic di
+                    # processamento non ha alcun senso
+                    if "alarm" not in kafka_topic:
+                        print(f"Messaggio inoltrato dal topic MQTT {msg.topic} al topic Kafka {flink_kafka_topic}, con offset {result_processing.offset}\n")
+                    else:
+                        print()
             else:
                 # Il messaggio duplicato è presente nel dizionario degli ultimi 'last' messaggi, quindi è già stato
                 # elaborato
                 print(f"Messaggio già processato e inoltrato dal topic MQTT {msg.topic} al topic Kafka {kafka_topic}")
-                print(f"Messaggio già processato e inoltrato dal topic MQTT {msg.topic} al topic Kafka {flink_kafka_topic}\n")
+                # Verifica della ricezione di un messaggio da uno dei topic di allarme, in questo caso il messaggio non
+                # deve essere processato, ma solamente memorizzato, per cui la stampa che riguarda il topic di
+                # processamento non ha alcun senso
+                if "alarm" not in kafka_topic:
+                    print(f"Messaggio già processato e inoltrato dal topic MQTT {msg.topic} al topic Kafka {flink_kafka_topic}\n")
+                else:
+                    print()
         # Messaggio originale
         else:
             # Verifica lunghezza dizionario
@@ -332,21 +365,33 @@ class BridgeMQTTKafka:
             # Invio del messaggio verso il broker Kafka con inclusione degli header per indicare l'encoding del
             # contenuto
             future_telemetry = self.get_kafka_client().send(topic=kafka_topic, value=msg.payload, headers=[("content-encoding", b"JSON")])
-            # Invio del messaggio verso il broker Kafka al topic dedito al processing della telemetria ricevuta
-            future_processing = self.get_kafka_client().send(topic=flink_kafka_topic, value=msg.payload, headers=[("content-encoding", b"JSON")])
+            # Verifica della ricezione di un messaggio da uno dei topic di allarme, in questo caso il messaggio non
+            # deve essere processato, ma solamente memorizzato
+            if "alarm" not in kafka_topic:
+                # Invio del messaggio verso il broker Kafka al topic dedito al processing della telemetria ricevuta
+                future_processing = self.get_kafka_client().send(topic=flink_kafka_topic, value=msg.payload, headers=[("content-encoding", b"JSON")])
 
             try:
                 # Attesa dell'effettivo invio del messaggio
                 result_telemetry = future_telemetry.get(timeout=60)
-                # Attesa dell'effettivo invio del messaggio
-                result_processing = future_processing.get(timeout=60)
+                # Verifica della ricezione di un messaggio da uno dei topic di allarme, in questo caso il messaggio non
+                # deve essere processato, ma solamente memorizzato
+                if "alarm" not in kafka_topic:
+                    # Attesa dell'effettivo invio del messaggio
+                    result_processing = future_processing.get(timeout=60)
             except KafkaTimeoutError:
                     sys.stderr.write("\nErrore! Fallita attesa dell'effettivo invio del messaggio, timeout scaduto\n")
             except KafkaError:
                 sys.stderr.write("\nErrore! Fallita attesa dell'effettivo invio del messaggio\n")
             else:
                 print(f"\nMessaggio inoltrato dal topic MQTT {msg.topic} al topic Kafka {kafka_topic}, con offset {result_telemetry.offset}")
-                print(f"Messaggio inoltrato dal topic MQTT {msg.topic} al topic Kafka {flink_kafka_topic}, con offset {result_processing.offset}\n")
+                # Verifica della ricezione di un messaggio da uno dei topic di allarme, in questo caso il messaggio non
+                # deve essere processato, ma solamente memorizzato, per cui la stampa che riguarda il topic di
+                # processamento non ha alcun senso
+                if "alarm" not in kafka_topic:
+                    print(f"Messaggio inoltrato dal topic MQTT {msg.topic} al topic Kafka {flink_kafka_topic}, con offset {result_processing.offset}\n")
+                else:
+                    print()
 
     # Stop method - prevede lo stop del bridge a seguito della ricezione di un segnale SIGINT (CTRL+C), per una 
     # graceful disconnection viene eseguito il metodo disconnect(.) per la disconnessione dal broker MQTT, la chiusura

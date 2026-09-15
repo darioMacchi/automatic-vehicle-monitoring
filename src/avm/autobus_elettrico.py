@@ -64,6 +64,9 @@ class AutobusElettrico(Autobus):
         # chiave - valore non sono mai liste o dizionari, sono sempre oggetti immutabili, però per avere un maggiore
         # grado di sicurezza ed essere coperti da eventuali modifiche si utilizza la copia profonda
 
+        # Definizione topic MQTT
+        self._topic = "AVM/telemetry/autobus/electric"
+
         # Connessione al broker MQTT
         self._connect_to_mqtt_broker()
 
@@ -200,6 +203,10 @@ class AutobusElettrico(Autobus):
         
         self._dynamic_threshold = dynamic_threshold
 
+    # Getter 'topic' parameter
+    def get_topic(self):
+        return self._topic
+
     # Getter 'msg_queue' parameter
     def get_msg_queue(self):
         return self._msg_queue.copy()
@@ -209,9 +216,9 @@ class AutobusElettrico(Autobus):
         self._msg_queue.clear()
 
     # Append 'msg_queue' parameter
-    def append_msg_queue(self, el: str | bytes):
-        if type(el) is not str and type(el) is not bytes:
-            raise TypeError(f"Errore! Il tipo del parametro passato deve essere 'str' | 'bytes'. Ricevuto {type(el)}")
+    def append_msg_queue(self, el: tuple):
+        if type(el) is not tuple:
+            raise TypeError(f"Errore! Il tipo del parametro passato deve essere 'tuple'. Ricevuto {type(el)}")
 
         self._msg_queue.append(el)
 
@@ -297,11 +304,18 @@ class AutobusElettrico(Autobus):
     # Comunicazione - comunicazione verso il sistema di Ingestion, ovverosia trasmissione del "pacchetto" dati verso 
     # il broker MQTT, e successiva predisposizione di un bridge per la comunicazione al sistema di Ingestion, ossia
     # Kafka
-    def communicate(self):
+    def communicate(self, alarm=False, topic="AVM/info", message="hello"):
         mqtt_client = self.get_mqtt_client()
         mqtt_timeout = self.get_timeout()
         payload = self.get_formatted_data_to_send()
+        topic_to_publish = self.get_topic()
         msg_queue = self.get_msg_queue()
+
+        # Verifica messaggio di allarme da comunicare e conseguente assegnazione di messaggio e topic passati come 
+        # argomenti di funzione
+        if alarm:
+            topic_to_publish = topic
+            payload = message
         
         # Verifica connessione client to broker
         if mqtt_client.is_connected():
@@ -309,7 +323,7 @@ class AutobusElettrico(Autobus):
             # maniera antecedente al messaggio attuale
             for msg in msg_queue:
                 # Publish con QoS 1 per assicurare la consegna del messaggio in coda
-                msginfo = mqtt_client.publish(topic="AVM/telemetry/autobus/electric", payload=msg, qos=1)
+                msginfo = mqtt_client.publish(topic=msg[0], payload=msg[1], qos=1)
 
                 # Attesa della pubblicazione del messaggio per assicurare una corretta gestione della QoS desiderata.
                 # QoS = 1 indica una qualità del servizio 'at_least_once'
@@ -326,7 +340,7 @@ class AutobusElettrico(Autobus):
             self.clear_msg_queue()
 
             # Publish con QoS 1 per assicurare la consegna del messaggio corrente
-            msginfo = mqtt_client.publish(topic="AVM/telemetry/autobus/electric", payload=payload, qos=1)
+            msginfo = mqtt_client.publish(topic=topic_to_publish, payload=payload, qos=1)
 
             # Attesa della pubblicazione del messaggio per assicurare una corretta gestione della QoS desiderata.
             # QoS = 1 indica una qualità del servizio 'at_least_once'
@@ -338,8 +352,8 @@ class AutobusElettrico(Autobus):
             else:
                 print(f"Uscita da wait_for_publish() con successo della pubblicazione sul broker del messaggio corrente")
         else:
-            # Aggiunta messaggio non inviato alla coda di messaggi in attesa
-            self.append_msg_queue(el=payload)
+            # Aggiunta (topic, messaggio) non inviato alla coda di messaggi in attesa
+            self.append_msg_queue(el=(topic_to_publish, payload))
             print("Connessione assente --> messaggio in coda...")
 
         # Rimozione dello stop del loop per due motivi:

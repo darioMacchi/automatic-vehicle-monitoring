@@ -46,6 +46,7 @@ class BridgeIngestionStorage:
         self._brokers_kafka = brokers_kafka.copy()
         self._telemetry_partitions = 2
         self._processing_partitions = 1
+        self._alarm_partitions = 2
         self._replication = 3
         self._min_insync_replicas = 2
         self._kafka_consumer, self._kafka_admin = self._consumer_admin_setup()
@@ -55,6 +56,8 @@ class BridgeIngestionStorage:
                             "AVM.telemetry.autobus.hybrid",
                             "AVM.telemetry.autobus.electric"]
         self._processing_topics_to_subscribe = ["AVM.processing.autobus.storage"]
+        self._alarm_topics_to_subscribe = ["AVM.alarm.autobus.enginelight",
+                                           "AVM.alarm.autobus.panicbutton"]
         self._setup_topics()
 
         # Setup MongoDB
@@ -99,20 +102,24 @@ class BridgeIngestionStorage:
         consumer = self.get_kafka_client()
         telemetry_topics_to_subscribe = self.get_telemetry_topics_to_subscribe()
         processing_topics_to_subscribe = self.get_processing_topics_to_subscribe()
+        alarm_topics_to_subscribe = self.get_alarm_topics_to_subscribe()
 
         # Setup parametri di configurazione topics
         telemetry_partitions = self.get_telemetry_partitions()
         processing_partitions = self.get_processing_partitions()
+        alarm_partitions = self.get_alarm_partitions()
         replication = self.get_replication()
         min_insync_replicas = self.get_min_insync_replicas()
 
         # Creazione dei topic di interesse nel momento in cui non siano presenti nel cluster
         self._create_topics_if_not_exist(topics=telemetry_topics_to_subscribe, partitions=telemetry_partitions, replication=replication, min_insync_replicas=min_insync_replicas)
         self._create_topics_if_not_exist(topics=processing_topics_to_subscribe, partitions=processing_partitions, replication=replication, min_insync_replicas=min_insync_replicas)
+        self._create_topics_if_not_exist(topics=alarm_topics_to_subscribe, partitions=alarm_partitions, replication=replication, min_insync_replicas=min_insync_replicas)
 
         # Formazione lista completa di topic di interesse
         topics_to_subscribe = telemetry_topics_to_subscribe
         topics_to_subscribe.extend(processing_topics_to_subscribe)
+        topics_to_subscribe.extend(alarm_topics_to_subscribe)
         # Subscription ai topic di interesse
         consumer.subscribe(topics=topics_to_subscribe)
 
@@ -161,6 +168,10 @@ class BridgeIngestionStorage:
     # Getter 'processing_partitions' parameter
     def get_processing_partitions(self):
         return self._processing_partitions
+
+    # Getter 'alarm_partitions' parameter
+    def get_alarm_partitions(self):
+        return self._alarm_partitions
     
     # Getter 'replication' parameter
     def get_replication(self):
@@ -185,6 +196,10 @@ class BridgeIngestionStorage:
     # Getter 'processing_topics_to_subscribe' parameter
     def get_processing_topics_to_subscribe(self):
         return self._processing_topics_to_subscribe.copy()
+
+    # Getter 'alarm_topics_to_subscribe' parameter
+    def get_alarm_topics_to_subscribe(self):
+        return self._alarm_topics_to_subscribe.copy()
 
     # Getter 'mongodb_client' parameter
     def get_mongodb_client(self):
@@ -249,6 +264,8 @@ class BridgeIngestionStorage:
             #   --> AVM.telemetry.autobus.hybrid
             #   --> AVM.telemetry.autobus.electric
             #   --> AVM.processing.autobus.storage
+            #   --> AVM.alarm.autobus.enginelight
+            #   --> AVM.alarm.autobus.panicbutton
             for topic in topics:
                 # Verifica che il topic non sia già stato creato, e quindi presente nel cluster, in questo caso è 
                 # effettivamente stato creato
@@ -314,8 +331,9 @@ class BridgeIngestionStorage:
 
         document_to_insert = {}
 
-        # Verifica topic di telemetria o topic di processing basato sulla presenza della key 'type' o meno
-        if data_type:
+        # Verifica topic di telemetria o topic di processing basato sulla presenza della key 'type' o meno, e verifica
+        # topic di processing o topic di allarme basato sul valore della key 'type'
+        if data_type != None and data_type != "enginelight" and data_type != "panicbutton":
             # Topic di PROCESSING
 
             # Preparazione documento da inserire, formato a partire dal documento ricevuto, con l'adattamento al formato
@@ -360,6 +378,22 @@ class BridgeIngestionStorage:
                         }
                     }
                 )
+        elif data_type != None and ( data_type == "enginelight" or data_type == "panicbutton" ):
+            # Topic di ALARM
+
+            # Inizializzazione documento da inserire nella collection MongoDB
+            document_to_insert = document
+
+            # Aggiunta metadati e rimozione della key 'license_plate' che rappresenta proprio i metadata in MongoDB
+            document_to_insert["metadata"] = {
+                "type": document["type"]
+            }
+            document_to_insert.pop("type")
+
+            # Adattamento del campo timestamp e del campo created_at per far sì che siano conformi al formato desiderato
+            # da MongoDB
+            document_to_insert["timestamp"] = datetime.fromtimestamp( document["timestamp"] , tz=timezone.utc)
+            document_to_insert["created_at"] = datetime.fromtimestamp( document["created_at"] , tz=timezone.utc)
         else:
             # Topic di TELEMETRIA
             

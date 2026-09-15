@@ -1,3 +1,4 @@
+import random
 import signal
 import sys
 import time
@@ -13,6 +14,7 @@ termic_bus_list = []
 hybrid_bus_list = []
 # Lista di autobus smart con motorizzazione elettrica
 electric_bus_list = []
+
 
 # Handler del segnale CTRL+C - metodo con cui si termina l'esecuzione di tutti gli Autobus con un messaggio, successivamente
 # avviene la cessazione di tutte le connessioni e la terminazione dei thread di background in cui avviene la comunicazione
@@ -42,6 +44,7 @@ def shutdown_all_autobus(sig_num: int, frame):
     print(f"Esecuzione interrotta dal segnale {sig_name}")
     print("Spegnimento motore...")
     sys.exit(0)
+
 
 # Check CMD Line Arguments - verifica dei parametri passati da linea di comando, in particolare relativi al numero di
 # autobus da costituire divisi per tipologia di motorizzazione. Viene operato un controllo sul tipo dei paramteri passati,
@@ -153,10 +156,64 @@ def check_cmd_line_args(termic_autobus_num: str, hybrid_autobus_num: str, electr
 
     return termic_num, hybrid_num, electric_num, host_mqtt, port_mqtt
 
+
+# Events License Plates SAFE - verifica dell'uguaglianza tra le targhe degli eventi generati, per evitare situazioni 
+# dove entrambi gli eventi avvengono su uno stesso autobus, perché il primo ad avvenire impedirebbe l'avvenimento
+# dell'altro, dato che dopo un qualsiasi evento di questo genere l'autobus viene fermato
+def events_license_plates_safe(lp_engine: str, lp_pbutton: str, time_engine: float, time_pbutton: float, lp_list: list):
+    if type(lp_engine) is not str:
+        raise TypeError(f"Errore! Il tipo del parametro 'lp_engine' passato deve essere 'str'. Ricevuto {type(lp_engine)}")
+
+    if type(lp_pbutton) is not str:
+        raise TypeError(f"Errore! Il tipo del parametro 'lp_pbutton' passato deve essere 'str'. Ricevuto {type(lp_pbutton)}")
+
+    if type(time_engine) is not float:
+            raise TypeError(f"Errore! Il tipo del parametro 'time_engine' passato deve essere 'float'. Ricevuto {type(time_engine)}")
+
+    if type(time_pbutton) is not float:
+            raise TypeError(f"Errore! Il tipo del parametro 'time_pbutton' passato deve essere 'float'. Ricevuto {type(time_pbutton)}")
+
+    if type(lp_list) is not list:
+        raise TypeError(f"Errore! Il tipo del parametro 'lp_list' passato deve essere 'list'. Ricevuto {type(lp_list)}")
+
+    # Verifica medesime targhe per entrambi gli eventi generati
+    if lp_engine == lp_pbutton:
+        # Aggiornamento della targa dell'evento che è stato creato da meno tempo, quindi dando priorità all'evento
+        # generato da più tempo, ossia l'evento più "vecchio"
+        if time_engine < time_pbutton:
+            # Rimozione targa evento più "vecchio"
+            lp_list.remove(lp_engine)
+            try:
+                # Pick della nuova targa dell'evento più "giovane" nella lista modificata
+                lp_pbutton = random.choice(lp_list)
+            except IndexError:
+                # Verifica lista vuota, random.choice() su una lista vuota fallisce e genera una eccezione IndexError,
+                # perché non può scegliere nessun elemento, per verificare che sia effettivamente questo il caso viene
+                # verificata l'assenza di elementi dalla lista, in quel caso la targa dei due eventi deve essere per
+                # forza la stessa
+                if len(lp_list) == 0:
+                    lp_pbutton = lp_engine
+        else:
+            # Rimozione targa evento più "vecchio"
+            lp_list.remove(lp_pbutton)
+            try:
+                # Pick della nuova targa dell'evento più "giovane" nella lista modificata
+                lp_engine = random.choice(lp_list)
+            except IndexError:
+                # Verifica lista vuota, random.choice() su una lista vuota fallisce e genera una eccezione IndexError,
+                # perché non può scegliere nessun elemento, per verificare che sia effettivamente questo il caso viene
+                # verificata l'assenza di elementi dalla lista, in quel caso la targa dei due eventi deve essere per
+                # forza la stessa
+                if len(lp_list) == 0:
+                    lp_engine = lp_pbutton
+
+    return lp_engine, lp_pbutton
+
+
 # Method main() - esecuzione del sistema di telemetria AVM relativo agli autobus smart, con controllo dei parametri 
 # passati da linea di comando, setup dei range per le metriche, del formato dati e altri informazioni necessarie alla 
 # corretta esecuzione, instanziazione degli autobus smart con diverse motorizzazioni e Ciclo azioni con le operazioni
-# di simulazione metriche, preparazione e invio "pacchetto" dati e stampa a video
+# di gestione eventi, simulazione metriche, preparazione e invio "pacchetto" dati e stampa a video
 def main():
     # Verifica corretta invocazione del programma
     if len(sys.argv) != 6:
@@ -219,14 +276,14 @@ def main():
         "hybrid_fuel_cons_low": 0.0,
         "hybrid_fuel_cons_up": 400.0
     }
+
     # Formato dati
     format = "JSON"
     # Setup ritardo in secondi [s]
-    # TODO
-    # Dimensionamento tra 1 e 5 secondi - DA DECIDERE
     delay_metrics = 5.0
     # Setup ritardo accensione motore
     delay_setup = 2.0
+
     # Setup timeout attesa pubblicazione messaggio broker MQTT
     # TODO
     # Ridimensionare (al momento è troppo alto perché per ogni messaggio aspettare quasi 5 secondi di timeout per la
@@ -242,11 +299,49 @@ def main():
     electric_num = 0
     # Flag necessario a segnalare la prima esecuzione del Ciclo azioni
     first_exec = True
+
     # Contatore necessario a segnalare il numero di esecuzioni del Ciclo azioni, e di conseguenza la frequenza
     # delle fermate
     fermata_bus = 0
     # Lista necessaria a verificare la correttezza dei contatori fermata bus restituiti dai diversi autobus smart
     update_fermata_bus_list = []
+
+    # Predisposizione parametri mu e sigma della distribuzione gaussiana da cui estrarre il numero che comporterà
+    # l'avvenimento o meno dell'evento spia motore. I parametri sono stati scelti in modo che l'evento sia poco
+    # probabile in un numero di esecuzioni alto, ossia la probabilità di estrarre un numero che comporta l'avvenimento
+    # dell'evento è di circa 2.28%, quindi ogni 100 iterazioni avvengono circa 2-3 eventi spia motore
+    # TODO
+    # Ridimensionare mean e devstd
+    mean_engine_event = 0
+    # devstd_engine_event = 1/2
+    devstd_engine_event = 0.8
+    # Set up evento spia motore
+    engine_event = {
+        "type": "enginelight",
+        "license_plate": "",
+        "happened": False,
+        "created_at": None
+    }
+    # Predisposizione parametri mu e sigma della distribuzione gaussiana da cui estrarre il numero che comporterà
+    # l'avvenimento o meno dell'evento panic button. I parametri sono stati scelti in modo che l'evento sia poco
+    # probabile in un numero di esecuzioni alto, ossia la probabilità di estrarre un numero che comporta l'avvenimento
+    # dell'evento è di circa 1.00%, quindi ogni 100 iterazioni avviene circa 1 evento panic button
+    # TODO
+    # Ridimensionare mean e devstd
+    mean_panic_button_event = 0
+    # devstd_panic_button_event = 0.43
+    devstd_panic_button_event = 0.8
+    # Set up evento panic button
+    panic_button_event = {
+        "type": "panicbutton", 
+        "license_plate": "",
+        "happened": False,
+        "created_at": None
+    }
+
+    # Inizializzazione dizionario dedito al mantenimento delle targhe in esecuzione e delle relativa lista e indice
+    # all'interno di questa corrispondenti
+    license_plates_in_exec = {}
 
     # Installazione handler del segnale CTRL+C
     signal.signal(signalnum=signal.SIGINT, handler=shutdown_all_autobus)
@@ -254,21 +349,77 @@ def main():
     # Verifica validità numero autobus e indirizzo broker MQTT
     termic_num, hybrid_num, electric_num, host, port = check_cmd_line_args(termic_autobus_num=sys.argv[1], hybrid_autobus_num=sys.argv[2], electric_autobus_num=sys.argv[3], host=sys.argv[4], port=sys.argv[5])
 
-    # Istanziazione oggetti Autobus
+    # ISTANZIAZIONE OGGETTI AUTOBUS
     # Utilizzo della lista globale di autobus smart con motorizzazione termica
     global termic_bus_list
-    for _ in range(0, termic_num):
+    for i in range(0, termic_num):
         termic_bus_list.append(AutobusTermico(ranges=ranges, timeout=delay_mqtt, host=host, port=port))
+
+        # Aggiunta al dizionario di targhe in esecuzione dell'oggetto:
+        #   targa : {
+        #       lista,
+        #       indice
+        #   }
+        license_plates_in_exec.update(
+            {
+                termic_bus_list[i].get_LP() : {
+                    "list": termic_bus_list,
+                    "index": i
+                }
+            }
+        )
 
     # Utilizzo della lista globale di autobus smart con motorizzazione ibrida
     global hybrid_bus_list
-    for _ in range(0, hybrid_num):
+    for i in range(0, hybrid_num):
         hybrid_bus_list.append(AutobusIbrido(ranges=ranges, timeout=delay_mqtt, host=host, port=port))
+
+        # Aggiunta al dizionario di targhe in esecuzione dell'oggetto:
+        #   targa : {
+        #       lista,
+        #       indice
+        #   }
+        license_plates_in_exec.update(
+            {
+                hybrid_bus_list[i].get_LP() : {
+                    "list": hybrid_bus_list,
+                    "index": i
+                }
+            }
+        )
 
     # Utilizzo della lista globale di autobus smart con motorizzazione elettrica
     global electric_bus_list
-    for _ in range(0, electric_num):
+    for i in range(0, electric_num):
         electric_bus_list.append(AutobusElettrico(ranges=ranges, timeout=delay_mqtt, host=host, port=port))
+
+        # Aggiunta al dizionario di targhe in esecuzione dell'oggetto:
+        #   targa : {
+        #       lista,
+        #       indice
+        #   }
+        license_plates_in_exec.update(
+            {
+                electric_bus_list[i].get_LP() : {
+                    "list": electric_bus_list,
+                    "index": i
+                }
+            }
+        )
+
+    # Pick della targa da associare all'evento spia motore
+    engine_event["license_plate"] = random.choice( list(license_plates_in_exec.keys()) )
+    # Assegnamento dell'istante di creazione dell'evento
+    engine_event["created_at"] = time.time()
+
+    # Rimozione temporanea della targa appena estratta per evitare che i due eventi siano associati alla stessa targa
+    list_license_plates_in_exec = list( license_plates_in_exec.keys() )
+    list_license_plates_in_exec.remove(engine_event["license_plate"])
+
+    # Pick della targa da associare all'evento panic button
+    panic_button_event["license_plate"] = random.choice( list_license_plates_in_exec )
+    # Assegnamento dell'istante di creazione dell'evento
+    panic_button_event["created_at"] = time.time()
 
     print("Accensione motore...\n")
     time.sleep(delay_setup)
@@ -280,6 +431,183 @@ def main():
 
         # Aggiornamento corrispondente al numero attuale di esecuzioni del Ciclo azioni
         fermata_bus += 1
+
+        # GESTIONE EVENTI
+
+        # Pick dalla distribuzione gaussiana, con parametri opportuni, del numero che determina l'avvenimento degli
+        # eventi o meno
+        happened_engine_event = random.gauss(mu=mean_engine_event, sigma=devstd_engine_event)
+        happened_panic_button_event = random.gauss(mu=mean_panic_button_event, sigma=devstd_panic_button_event)
+
+        # Verifica del numero associato all'evento spia motore estratto, solamente se maggiore uno allora l'evento
+        # avviene
+        if happened_engine_event > 1:
+            engine_event["happened"] = True
+
+        # Verifica del numero associato all'evento panic button estratto, solamente se maggiore uno allora l'evento
+        # avviene
+        if happened_panic_button_event > 1:
+            panic_button_event["happened"] = True
+
+        # Verifica avvenimento evento spia motore
+        if engine_event["happened"]:
+            # Chiamata al metodo di gestione dell'evento dell'autobus selezionato
+            license_plates_in_exec[engine_event["license_plate"]]["list"][license_plates_in_exec[engine_event["license_plate"]]["index"]].handle_critic_events(event_msg=engine_event.copy())
+
+            # Predispozione liste di targhe per motorizzazione
+            termic_lp_list = [autobus.get_LP() for autobus in termic_bus_list]
+            hybrid_lp_list = [autobus.get_LP() for autobus in hybrid_bus_list]
+            electric_lp_list = [autobus.get_LP() for autobus in electric_bus_list]
+
+            # Rimozione dell'autobus e della targa associata dagli oggetti che ne contengono occorrenze
+            license_plates_in_exec[engine_event["license_plate"]]["list"].pop(license_plates_in_exec[engine_event["license_plate"]]["index"])
+            license_plates_in_exec.pop(engine_event["license_plate"])
+
+            # Aggiornamento della rispettiva lista, di cui dovrà essere calato il numero di elementi e di nuovo
+            # scorsa per aggiornare gli indici presenti nel dizionario di targhe in esecuzione
+            if engine_event["license_plate"] in termic_lp_list:
+                termic_num -= 1
+                for i in range(0, termic_num):
+                    license_plates_in_exec.update(
+                        {
+                            termic_bus_list[i].get_LP() : {
+                                "list": termic_bus_list,
+                                "index": i
+                            }
+                        }
+                    )
+
+                termic_lp_list.remove(engine_event["license_plate"])
+            elif engine_event["license_plate"] in hybrid_lp_list:
+                hybrid_num -= 1
+
+                for i in range(0, hybrid_num):
+                    license_plates_in_exec.update(
+                        {
+                            hybrid_bus_list[i].get_LP() : {
+                                "list": hybrid_bus_list,
+                                "index": i
+                            }
+                        }
+                    )
+
+                hybrid_lp_list.remove(engine_event["license_plate"])
+            else:
+                electric_num -= 1
+
+                for i in range(0, electric_num):
+                    license_plates_in_exec.update(
+                        {
+                            electric_bus_list[i].get_LP() : {
+                                "list": electric_bus_list,
+                                "index": i
+                            }
+                        }
+                    )
+
+                electric_lp_list.remove(engine_event["license_plate"])
+
+            # Reimpostazione dell'avvenimento dell'evento a False, ossia 'non avvenuto'
+            engine_event["happened"] = False
+
+            # Pick nuova targa associata all'evento
+            try:
+                engine_event["license_plate"] = random.choice( list(license_plates_in_exec.keys()) )
+            except IndexError:
+                # Verifica presenza autobus, random.choice() su una lista vuota fallisce e genera una eccezione
+                # IndexError, perché non può scegliere nessun elemento, per verificare che sia effettivamente questo
+                # il caso viene verificata l'assenza di autobus in esecuzione, in quel caso la targa diventa la stringa
+                # vuota come placeholder, dato che a seguito degli eventi avvenuti l'esecuzione sarà interrotta
+                if termic_num == 0 and hybrid_num == 0 and electric_num == 0:
+                    engine_event["license_plate"] = ""
+            # Assegnamento nuovo istante di creazione dell'evento
+            engine_event["created_at"] = time.time()
+
+        # Verifica uguaglianza targhe eventi
+        engine_event["license_plate"], panic_button_event["license_plate"] = events_license_plates_safe(lp_engine=engine_event["license_plate"], lp_pbutton=panic_button_event["license_plate"], time_engine=engine_event["created_at"], time_pbutton=panic_button_event["created_at"], lp_list=list( license_plates_in_exec.keys() ))
+
+        # Verifica avvenimento evento panic button
+        if panic_button_event["happened"]:
+            # Chiamata al metodo di gestione dell'evento dell'autobus selezionato
+            license_plates_in_exec[panic_button_event["license_plate"]]["list"][license_plates_in_exec[panic_button_event["license_plate"]]["index"]].handle_critic_events(event_msg=panic_button_event.copy())
+
+            # Predispozione liste di targhe per motorizzazione
+            termic_lp_list = [autobus.get_LP() for autobus in termic_bus_list]
+            hybrid_lp_list = [autobus.get_LP() for autobus in hybrid_bus_list]
+            electric_lp_list = [autobus.get_LP() for autobus in electric_bus_list]
+
+            # Rimozione dell'autobus e della targa associata dagli oggetti che ne contengono occorrenze
+            license_plates_in_exec[panic_button_event["license_plate"]]["list"].pop(license_plates_in_exec[panic_button_event["license_plate"]]["index"])
+            license_plates_in_exec.pop(panic_button_event["license_plate"])
+
+            # Aggiornamento della rispettiva lista, di cui dovrà essere calato il numero di elementi e di nuovo
+            # scorsa per aggiornare gli indici presenti nel dizionario di targhe in esecuzione
+            if panic_button_event["license_plate"] in termic_lp_list:
+                termic_num -= 1
+                for i in range(0, termic_num):
+                    license_plates_in_exec.update(
+                        {
+                            termic_bus_list[i].get_LP() : {
+                                "list": termic_bus_list,
+                                "index": i
+                            }
+                        }
+                    )
+
+                termic_lp_list.remove(panic_button_event["license_plate"])
+            elif panic_button_event["license_plate"] in hybrid_lp_list:
+                hybrid_num -= 1
+
+                for i in range(0, hybrid_num):
+                    license_plates_in_exec.update(
+                        {
+                            hybrid_bus_list[i].get_LP() : {
+                                "list": hybrid_bus_list,
+                                "index": i
+                            }
+                        }
+                    )
+
+                hybrid_lp_list.remove(panic_button_event["license_plate"])
+            else:
+                electric_num -= 1
+
+                for i in range(0, electric_num):
+                    license_plates_in_exec.update(
+                        {
+                            electric_bus_list[i].get_LP() : {
+                                "list": electric_bus_list,
+                                "index": i
+                            }
+                        }
+                    )
+
+                electric_lp_list.remove(panic_button_event["license_plate"])
+
+            # Reimpostazione dell'avvenimento dell'evento a False, ossia 'non avvenuto'
+            panic_button_event["happened"] = False
+
+            # Pick nuova targa associata all'evento
+            try:
+                panic_button_event["license_plate"] = random.choice( list(license_plates_in_exec.keys()) )
+            except IndexError:
+                # Verifica presenza autobus, random.choice() su una lista vuota fallisce e genera una eccezione
+                # IndexError, perché non può scegliere nessun elemento, per verificare che sia effettivamente questo
+                # il caso viene verificata l'assenza di autobus in esecuzione, in quel caso la targa diventa la stringa
+                # vuota come placeholder, dato che a seguito degli eventi avvenuti l'esecuzione sarà interrotta
+                if termic_num == 0 and hybrid_num == 0 and electric_num == 0:
+                    panic_button_event["license_plate"] = ""
+            # Assegnamento nuovo istante di creazione dell'evento
+            panic_button_event["created_at"] = time.time()
+
+        # Verifica uguaglianza targhe eventi
+        engine_event["license_plate"], panic_button_event["license_plate"] = events_license_plates_safe(lp_engine=engine_event["license_plate"], lp_pbutton=panic_button_event["license_plate"], time_engine=engine_event["created_at"], time_pbutton=panic_button_event["created_at"], lp_list=list( license_plates_in_exec.keys() ))
+
+        # Verifica assenza autobus in esecuzione, in questo caso l'esecuzione viene interrotta
+        if termic_num == 0 and hybrid_num == 0 and electric_num == 0:
+            print(f"Esecuzione interrotta a causa di insufficienza di autobus")
+            print("Spegnimento motore...")
+            sys.exit(0)
 
         # SIMULAZIONE METRICHE
         # Termic
@@ -340,6 +668,7 @@ def main():
         fermata_bus = update_fermata_bus
 
         time.sleep(delay_metrics)
+
 
 if __name__ == "__main__":
     main()
