@@ -237,6 +237,7 @@ class EdgeProcessing:
         self._brokers_kafka = brokers_kafka.copy()
         self._kafka_admin = self._setup_kafka()
         self._partitions = 1
+        self._storage_partitions = 2
         self._replication = 3
         self._min_insync_replicas = 2
 
@@ -258,10 +259,22 @@ class EdgeProcessing:
         # Topics initialization
         self._source_topics = ['AVM.processing.autobus.data.termic', 'AVM.processing.autobus.data.hybrid',
                         'AVM.processing.autobus.data.electric']
+        # Inizializzazione dei topic da cui vengono ricevuti i dati da processare con partizioni = 1
         self._create_topic_if_not_exist(topics=self.get_source_topics(), partitions=self.get_partitions(), replication=self.get_replication(), min_insync_replicas=self.get_min_insync_replicas())
         
         self._sink_topics = ['AVM.processing.autobus.dashboard', "AVM.processing.autobus.storage"]
-        self._create_topic_if_not_exist(topics=self.get_sink_topics(), partitions=self.get_partitions(), replication=self.get_replication(), min_insync_replicas=self.get_min_insync_replicas())
+        # Inizializzazione del topic dedicato alla presentazione tramite live dashboarding dei dati processati con
+        # partizioni = 1
+        self._create_topic_if_not_exist(topics=[ self.get_sink_topics()[0] ], partitions=self.get_partitions(), replication=self.get_replication(), min_insync_replicas=self.get_min_insync_replicas())
+        # Inizializzazione del topic dedicato alla memorizzazione dei dati processati con partizioni > 1
+        self._create_topic_if_not_exist(topics=[ self.get_sink_topics()[1] ], partitions=self.get_storage_partitions(), replication=self.get_replication(), min_insync_replicas=self.get_min_insync_replicas())
+
+        # I topic da cui vengono ricevuti i dati da processare ed il topic dedicato alla presentazione dei dati processati
+        # tramite live dashboarding hanno un'unica partizione. Questo perché i dati ricevuti devono essere garantiti in
+        # ordine, e Kafka garantisce ordinamento solamente all'interno della singola partizione.
+        # Il topic dedicato alla memorizzazione dei dati processati ha più di una partizione, questo perché l'ordinamento
+        # è garantito da MongoDB dato che i dati sono inseriti in una timeseries collection, quindi dividere in più
+        # partizioni i dati permette di bilanciare il carico tra più consumer Kafka (quando disponibili)
 
     # Setup Kafka - metodo necessario alla creazione dell'admin Kafka specificando bootstrap servers a cui deve
     # avvenire la connessione e client_id
@@ -312,6 +325,10 @@ class EdgeProcessing:
     # Getter 'partitions' parameter
     def get_partitions(self):
         return self._partitions
+
+    # Getter 'storage_partitions' parameter
+    def get_storage_partitions(self):
+        return self._storage_partitions
     
     # Getter 'replication' parameter
     def get_replication(self):

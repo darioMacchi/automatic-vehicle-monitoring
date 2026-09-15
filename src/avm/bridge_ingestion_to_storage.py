@@ -45,7 +45,7 @@ class BridgeIngestionStorage:
         # Setup Kafka
         self._brokers_kafka = brokers_kafka.copy()
         self._telemetry_partitions = 2
-        self._processing_partitions = 1
+        self._processing_partitions = 2
         self._alarm_partitions = 2
         self._replication = 3
         self._min_insync_replicas = 2
