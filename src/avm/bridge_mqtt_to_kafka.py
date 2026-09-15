@@ -268,8 +268,7 @@ class BridgeMQTTKafka:
 
         payload = json.loads(msg.payload.decode())
         # Dimensionamento dizionario degli ultimi messaggi
-        # TODO
-        last = 30
+        last = 120
 
         # Creazione del topic di telemetria nel cluster Kafka con i parametri di config appropriati
         self._create_topic_if_not_exist(topic=kafka_topic, partitions=self.get_partitions(), replication=self.get_replication(), min_insync_replicas=self.get_min_insync_replicas())
