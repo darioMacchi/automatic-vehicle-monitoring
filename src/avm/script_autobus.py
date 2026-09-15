@@ -285,12 +285,8 @@ def main():
     # Setup ritardo accensione motore
     delay_setup = 2.0
 
-    # Setup timeout attesa pubblicazione messaggio broker MQTT
-    # TODO
-    # Ridimensionare (al momento è troppo alto perché per ogni messaggio aspettare quasi 5 secondi di timeout per la
-    # pubblicazione del messaggio è tanto, soprattutto se ci sono tanti messaggi in coda [magari a seguito di una
-    # perdita di connessione col broker MQTT])
-    delay_mqtt = 4.90
+    # Setup timeout attesa pubblicazione ogni messaggio broker MQTT
+    delay_mqtt = 2.00
     # Numero autobus:
     #   Termici
     #   Ibridi
@@ -311,11 +307,8 @@ def main():
     # l'avvenimento o meno dell'evento spia motore. I parametri sono stati scelti in modo che l'evento sia poco
     # probabile in un numero di esecuzioni alto, ossia la probabilità di estrarre un numero che comporta l'avvenimento
     # dell'evento è di circa 2.28%, quindi ogni 100 iterazioni avvengono circa 2-3 eventi spia motore
-    # TODO
-    # Ridimensionare mean e devstd
     mean_engine_event = 0
-    # devstd_engine_event = 1/2
-    devstd_engine_event = 0.8
+    devstd_engine_event = 1/2
     # Set up evento spia motore
     engine_event = {
         "type": "enginelight",
@@ -331,11 +324,8 @@ def main():
     # l'avvenimento o meno dell'evento panic button. I parametri sono stati scelti in modo che l'evento sia poco
     # probabile in un numero di esecuzioni alto, ossia la probabilità di estrarre un numero che comporta l'avvenimento
     # dell'evento è di circa 1.00%, quindi ogni 100 iterazioni avviene circa 1 evento panic button
-    # TODO
-    # Ridimensionare mean e devstd
     mean_panic_button_event = 0
-    # devstd_panic_button_event = 0.43
-    devstd_panic_button_event = 0.8
+    devstd_panic_button_event = 0.43
     # Set up evento panic button
     panic_button_event = {
         "type": "panicbutton", 
