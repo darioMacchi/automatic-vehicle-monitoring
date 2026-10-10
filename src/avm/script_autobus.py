@@ -348,6 +348,12 @@ def main():
     # Verifica validità numero autobus e indirizzo broker MQTT
     termic_num, hybrid_num, electric_num, host, port = check_cmd_line_args(termic_autobus_num=sys.argv[1], hybrid_autobus_num=sys.argv[2], electric_autobus_num=sys.argv[3], host=sys.argv[4], port=sys.argv[5])
 
+    # Verifica assenza autobus in esecuzione, in questo caso l'esecuzione viene interrotta
+    if termic_num == 0 and hybrid_num == 0 and electric_num == 0:
+        print(f"Esecuzione interrotta a causa di insufficienza di autobus")
+        print("Spegnimento motore...")
+        sys.exit(0)
+
     # ISTANZIAZIONE OGGETTI AUTOBUS
     # Utilizzo della lista globale di autobus smart con motorizzazione termica
     global termic_bus_list
@@ -415,8 +421,12 @@ def main():
     list_license_plates_in_exec = list( license_plates_in_exec.keys() )
     list_license_plates_in_exec.remove(engine_event["license_plate"])
 
-    # Pick della targa da associare all'evento panic button
-    panic_button_event["license_plate"] = random.choice( list_license_plates_in_exec )
+    try:
+        # Pick della targa da associare all'evento panic button
+        panic_button_event["license_plate"] = random.choice( list_license_plates_in_exec )
+    except IndexError:
+        if len(list_license_plates_in_exec) == 0:
+            panic_button_event["license_plate"] = engine_event["license_plate"]
     # Assegnamento dell'istante di creazione dell'evento
     panic_button_event["created_at"] = time.time()
 
@@ -534,6 +544,12 @@ def main():
             # Assegnamento nuovo istante di creazione dell'evento
             engine_event["created_at"] = time.time()
 
+        # Verifica assenza autobus in esecuzione, in questo caso l'esecuzione viene interrotta
+        if termic_num == 0 and hybrid_num == 0 and electric_num == 0:
+            print(f"Esecuzione interrotta a causa di insufficienza di autobus")
+            print("Spegnimento motore...")
+            sys.exit(0)
+
         # Verifica uguaglianza targhe eventi
         engine_event["license_plate"], panic_button_event["license_plate"] = events_license_plates_safe(lp_engine=engine_event["license_plate"], lp_pbutton=panic_button_event["license_plate"], time_engine=engine_event["created_at"], time_pbutton=panic_button_event["created_at"], lp_list=list( license_plates_in_exec.keys() ))
 
@@ -623,14 +639,14 @@ def main():
             # Assegnamento nuovo istante di creazione dell'evento
             panic_button_event["created_at"] = time.time()
 
-        # Verifica uguaglianza targhe eventi
-        engine_event["license_plate"], panic_button_event["license_plate"] = events_license_plates_safe(lp_engine=engine_event["license_plate"], lp_pbutton=panic_button_event["license_plate"], time_engine=engine_event["created_at"], time_pbutton=panic_button_event["created_at"], lp_list=list( license_plates_in_exec.keys() ))
-
         # Verifica assenza autobus in esecuzione, in questo caso l'esecuzione viene interrotta
         if termic_num == 0 and hybrid_num == 0 and electric_num == 0:
             print(f"Esecuzione interrotta a causa di insufficienza di autobus")
             print("Spegnimento motore...")
             sys.exit(0)
+
+        # Verifica uguaglianza targhe eventi
+        engine_event["license_plate"], panic_button_event["license_plate"] = events_license_plates_safe(lp_engine=engine_event["license_plate"], lp_pbutton=panic_button_event["license_plate"], time_engine=engine_event["created_at"], time_pbutton=panic_button_event["created_at"], lp_list=list( license_plates_in_exec.keys() ))
 
         # SIMULAZIONE METRICHE
         # Termic
