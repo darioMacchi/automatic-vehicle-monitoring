@@ -373,6 +373,155 @@ class Autobus:
     def get_critic_topic_prefix(self):
         return self._critic_topic_prefix
 
+    # Generazione randomici in un intervallo - il metodo prevede i parametri che definiscono i bound entro cui generare il
+    # numero randomico, inoltre desidera in ingresso un flag 'integer' che discrimina i casi di generazione di un randomico
+    # intero o floating point, e mette a disposizione anche il parametro 'digit_to_round' per specificare il numero di cifre
+    # da mantenere dopo la virgola
+    def _generate_random_number_in_a_range(self, upper_bound: float | int, lower_bound: float | int, integer: bool, digit_to_round=1) -> float | int:
+        rand_number = None
+
+        # Verifica flag 'integer' al fine di appurare se la chiamata riguarda la generazione di un randomico intero o 
+        # in virgola mobile all'interno di in un intervallo
+        if integer:
+            rand_number = random.randrange(lower_bound, upper_bound)
+        else:
+            rand_number = round( random.random() * (upper_bound - lower_bound) + lower_bound, digit_to_round )
+
+        return rand_number
+
+    # Algoritmo generazione coordinate - prevede la generazione di coordinate GPS all'interno di un percorso unico
+    # identificato dai parametri di limite superiore e inferiore del range. Il metodo predisposto pretende in ingresso anche
+    # il parametro di direzione attuale 'direction', la coordinata precedente 'past_coordinate', la quantità da aggiungere o
+    # rimuovere alla coordinata 'coordinate_span', infine la direzione positiva e la direzione negativa 'positive_direction'
+    # e 'negative_direction', che permettono di astrarre la logica delle direzioni distinte tra latitudine e longitudine,
+    # ossia NORD/SUD per la latitudine, mentre EST/OVEST per la longitudine
+    def _generate_gps_coordinate(self, direction: str, past_coordinate: float, coordinate_span: float, positive_direction: str, negative_direction: str, low_limit_coordinate: float, up_limit_coordinate: float) -> tuple[float, str]:
+        coordinate = 0.0
+
+        # Impostazione delle coordinate con aggiunta e sottrazione di una quantità fissata
+        added_coordinate = round(past_coordinate + coordinate_span, 5)
+        subtracted_coordinate = round(past_coordinate - coordinate_span, 5)
+        
+        # Finché lo spostamento avviene in una direzione e il limite massimo non viene superato si continua ad
+        # aggiungere o sottrarre, nel momento in cui il limite massimo viene superato si inverte la direzione e 
+        # l'operazione di addizione o sottrazione
+        if direction == positive_direction and added_coordinate <= up_limit_coordinate and added_coordinate >= low_limit_coordinate:
+            coordinate = added_coordinate
+        elif direction == positive_direction and added_coordinate > up_limit_coordinate and added_coordinate >= low_limit_coordinate:
+            direction = negative_direction
+            coordinate = subtracted_coordinate
+        elif direction == negative_direction and subtracted_coordinate >= low_limit_coordinate and subtracted_coordinate <= up_limit_coordinate:
+            coordinate = subtracted_coordinate
+        elif direction == negative_direction and subtracted_coordinate < low_limit_coordinate and subtracted_coordinate <= up_limit_coordinate:
+            direction = positive_direction
+            coordinate = added_coordinate
+        else:
+            # Alternativa prevista nel caso in cui venga utilizzato l'oggetto con chiamata unica al metodo e non
+            # all'interno di un ciclo come nell'utilizzo previsto, per cui nel caso in cui i metodi vengano utilizzati
+            # come una sorta di API. Per questo stesso motivo è stata aggiunta la condizione che riguarda l'estremo opposto
+            # , ossia quella di essere effettivamente all'interno del range
+            coordinate = low_limit_coordinate
+
+        return coordinate, direction
+
+    # Algoritmo generazione metriche - prevede la generazione di metriche randomiche all'interno di un intervallo per uno
+    # scostamento limitato dalla precedente metrica, in modo da simulare un funzionamento verosimile. I parametri richiesti
+    # sono i limiti dell'intervallo, la metrica precedente, la quantità da aggiungere e sottrarre alla metrica precedente per
+    # definire l'intervallo di scostamento, alcuni flag che discrimano i casi di metrica intera, ambientale o che abbia 
+    # necessità di un valore iniziale, e infine il parametro necessario per specificare il numero di cifre da mantenere dopo
+    # la virgola 
+    def _generate_floating_point_or_integer_metric(self, up_limit: float | int, low_limit: float | int, past_metric: float | int, metric_span: float | int, integer: bool, initial: bool, environment: bool, initial_metric=0.0, digit_to_round=1) -> float | int:
+        metric = self._generate_random_number_in_a_range(upper_bound=up_limit, lower_bound=low_limit, integer=integer, digit_to_round=digit_to_round)
+
+        # Impostazione delle metriche con aggiunta e sottrazione di una quantità fissata
+        added_metric = past_metric + metric_span
+        subtracted_metric = past_metric - metric_span
+
+        # Impostazione dell'intervallo da cui attingere la metrica random
+        metric_range = None
+        if integer:
+            metric_range = range(subtracted_metric, added_metric + 1)
+        else:
+            metric_range = np.arange(subtracted_metric, added_metric + 0.1, 0.1)
+        
+        # Verifica metrica generata randomicamente all'interno dell'intervallo di discostamento massimo dalla
+        # precedente misura della metrica
+        if metric not in metric_range:
+
+            # Verifica presenza dell'intervallo [past_metric - metric_span, past_metric + metric_span] all'interno
+            # dell'intervallo generale
+            if subtracted_metric >= low_limit and added_metric <= up_limit and added_metric >= subtracted_metric:
+                metric = self._generate_random_number_in_a_range(upper_bound=added_metric, lower_bound=subtracted_metric, integer=integer, digit_to_round=digit_to_round)
+            # Verifica uscita dall'intervallo generale dell'estremo inferiore
+            elif subtracted_metric < low_limit and added_metric <= up_limit and added_metric >= low_limit:
+                metric = self._generate_random_number_in_a_range(upper_bound=added_metric, lower_bound=low_limit, integer=integer, digit_to_round=digit_to_round)
+            # Uscita dall'intervallo generale dell'estremo superiore
+            elif added_metric > up_limit and subtracted_metric >= low_limit and up_limit >= subtracted_metric:
+                metric = self._generate_random_number_in_a_range(upper_bound=up_limit, lower_bound=subtracted_metric, integer=integer, digit_to_round=digit_to_round)
+            else:
+                # Alternativa prevista nel caso in cui venga utilizzato l'oggetto con chiamata unica al metodo e non
+                # all'interno di un ciclo come nell'utilizzo previsto, per cui nel caso in cui i metodi vengano utilizzati
+                # come una sorta di API. Per questo stesso motivo è stata aggiunta la condizione che riguarda i due estremi
+                # , ossia che l'estremo superiore utilizzato per l'aggiornamento sia effettivamente maggiore o uguale di
+                # quello inferiore utilizzato nell'aggiornamento
+                
+                # Verifica presenza metrica ambientale
+                if environment:
+                    metric = self._generate_random_number_in_a_range(upper_bound=up_limit, lower_bound=low_limit, integer=integer, digit_to_round=digit_to_round)
+                # Verifica presenza valore iniziale per la metrica
+                elif initial:
+                    # Assicurazione del tipo intero del valore iniziale passato
+                    if integer:
+                        try:
+                            initial_metric = int(initial_metric)
+                        except ValueError:
+                            initial_metric = 0
+                    
+                    metric = initial_metric
+                # Fallback impostazione valore massimo per la metrica
+                else:
+                    metric = up_limit
+
+        return metric
+
+    # Algoritmo generazione metriche di stato - prevede la generazione di metriche riguardo alla stato di impianti o sistemi,
+    # per generare stati successivi verosimili viene prelevato il nuovo stato a partire dal precedente e dal suo intorno,
+    # dove il suo intorno è definito dallo stato alla sua sinistra e alla sua destra. I parametri richiesti sono la lista
+    # contenente tutti gli stati possibili, e la metrica precedente
+    def _generate_status_metric(self, status_list: list, past_metric: str) -> str:
+        new_status_metric = None
+        status_list_to_pick_from = []
+        
+        # Verifica che la stringa precedente sia non vuota, questo per assicurare che l'utilizzo avvenga all'interno di un
+        # ciclo, come da utilizzo inteso dell'oggetto
+        if past_metric != "":
+            past_index = status_list.index(past_metric)
+
+            # Impostazione degli indici con aggiunta e sottrazione di una quantità fissata
+            added_past_index = past_index + 1
+            subtracted_past_index = past_index - 1
+
+            # Verifica indice stato precedente, se posto ai boundaries viene escluso uno stato nella lista da cui 
+            # prelevare lo stato successivo, in particolare se lo stato precedente è a indice 0 viene escluso quello alla
+            # sua sinistra ( index: -1 ), mentre se lo stato precedente è a indice len(status_list) - 1 viene escluso quello
+            # alla sua destra ( index: len(status_list) )
+            if subtracted_past_index >= 0 and added_past_index < len(status_list):
+                status_list_to_pick_from = [status_list[subtracted_past_index], past_metric, status_list[added_past_index]]
+            elif subtracted_past_index < 0:
+                status_list_to_pick_from = [past_metric, status_list[added_past_index]]
+            elif added_past_index >= len(status_list):
+                status_list_to_pick_from = [status_list[subtracted_past_index], past_metric]
+        else:
+            # Alternativa prevista nel caso in cui venga utilizzato l'oggetto con chiamata unica al metodo e non
+            # all'interno di un ciclo come nell'utilizzo previsto, per cui nel caso in cui i metodi vengano utilizzati
+            # come una sorta di API. Per questo stesso motivo è stata aggiunta la verifica sulla stringa precedente
+            # , ossia che sia non vuota per prevenire eventuali errori indesiderati
+            status_list_to_pick_from = [status_list[-3], status_list[-2], status_list[-1]]
+        
+        new_status_metric = random.choice(status_list_to_pick_from)
+
+        return new_status_metric
+
     # Simulazione Metriche - metodo che permette di generare ed aggiornare le metriche da comprendere successivamente nel
     # "pacchetto" dati da inviare, attraverso il protocollo di comunicazione MQTT, al sistema di Ingestion. L'aggiornamento
     # avviene in maniera elaborata per sembrare maggiormente verosimile
@@ -425,112 +574,28 @@ class Autobus:
             # Aggiornamento dati successivo alla prima simulazione, fornito di discostamento massimo
 
             # LATITUDINE - copertura di un percorso unico tra le due coordinate limite
-            new_lat = 0.0
+            new_lat, new_lat_direction = self._generate_gps_coordinate(direction=self.get_lat_direction(), past_coordinate=prec_latitude, coordinate_span=lat_span, positive_direction="NORD", negative_direction="SUD", low_limit_coordinate=self._ranges["gps"]["latitude_low"], up_limit_coordinate=self._ranges["gps"]["latitude_up"])
 
-            # Finché lo spostamento avviene in una direzione e il limite massimo non viene superato si continua ad
-            # aggiungere o sottrarre, nel momento in cui il limite massimo viene superato si inverte la direzione e 
-            # l'operazione di addizione o sottrazione
-            if self.get_lat_direction() == "NORD" and round(prec_latitude + lat_span, 5) <= self._ranges["gps"]["latitude_up"] and round(prec_latitude + lat_span, 5) >= self._ranges["gps"]["latitude_low"]:
-                new_lat = round(prec_latitude + lat_span, 5)
-            elif self.get_lat_direction() == "NORD" and round(prec_latitude + lat_span, 5) > self._ranges["gps"]["latitude_up"] and round(prec_latitude + lat_span, 5) >= self._ranges["gps"]["latitude_low"]:
-                self.set_lat_direction("SUD")
-                new_lat = round(prec_latitude - lat_span, 5)
-            elif self.get_lat_direction() == "SUD" and round(prec_latitude - lat_span, 5) >= self._ranges["gps"]["latitude_low"] and round(prec_latitude - lat_span, 5) <= self._ranges["gps"]["latitude_up"]:
-                new_lat = round(prec_latitude - lat_span, 5)
-            elif self.get_lat_direction() == "SUD" and round(prec_latitude - lat_span, 5) < self._ranges["gps"]["latitude_low"] and round(prec_latitude - lat_span, 5) <= self._ranges["gps"]["latitude_up"]:
-                self.set_lat_direction("NORD")
-                new_lat = round(prec_latitude + lat_span, 5)
-            else:
-                # Alternativa prevista nel caso in cui venga utilizzato l'oggetto con chiamata unica al metodo e non
-                # all'interno di un ciclo come nell'utilizzo previsto, per cui nel caso in cui i metodi vengano utilizzati
-                # come una sorta di API. Per questo stesso motivo è stata aggiunta la condizione che riguarda l'estremo opposto
-                # , ossia quella di essere effettivamente all'interno del range
-                new_lat = self._ranges["gps"]["latitude_low"]
-
+            self.set_lat_direction(new_lat_direction)
             self.set_latitude(new_lat)
 
             # LONGITUDINE - copertura di un percorso unico tra le due coordinate limite
-            new_long = 0.0
+            new_long, new_long_direction = self._generate_gps_coordinate(direction=self.get_long_direction(), past_coordinate=prec_longitude, coordinate_span=long_span, positive_direction="EST", negative_direction="OVEST", low_limit_coordinate=self._ranges["gps"]["longitude_low"], up_limit_coordinate=self._ranges["gps"]["longitude_up"])
 
-            # Finché lo spostamento avviene in una direzione e il limite massimo non viene superato si continua ad
-            # aggiungere o sottrarre, nel momento in cui il limite massimo viene superato si inverte la direzione e 
-            # l'operazione di addizione o sottrazione
-            if self.get_long_direction() == "EST" and round(prec_longitude + long_span, 5) <= self._ranges["gps"]["longitude_up"] and round(prec_longitude + long_span, 5) >= self._ranges["gps"]["longitude_low"]:
-                new_long = round(prec_longitude + long_span, 5)
-            elif self.get_long_direction() == "EST" and round(prec_longitude + long_span, 5) > self._ranges["gps"]["longitude_up"] and round(prec_longitude + long_span, 5) >= self._ranges["gps"]["longitude_low"]:
-                self.set_long_direction("OVEST")
-                new_long = round(prec_longitude - long_span, 5)
-            elif self.get_long_direction() == "OVEST" and round(prec_longitude - long_span, 5) >= self._ranges["gps"]["longitude_low"] and round(prec_longitude - long_span, 5) <= self._ranges["gps"]["longitude_up"]:
-                new_long = round(prec_longitude - long_span, 5)
-            elif self.get_long_direction() == "OVEST" and round(prec_longitude - long_span, 5) < self._ranges["gps"]["longitude_low"] and round(prec_longitude - long_span, 5) <= self._ranges["gps"]["longitude_up"]:
-                self.set_long_direction("EST")
-                new_long = round(prec_longitude + long_span, 5)
-            else:
-                # Alternativa prevista nel caso in cui venga utilizzato l'oggetto con chiamata unica al metodo e non
-                # all'interno di un ciclo come nell'utilizzo previsto, per cui nel caso in cui i metodi vengano utilizzati
-                # come una sorta di API. Per questo stesso motivo è stata aggiunta la condizione che riguarda l'estremo opposto
-                # , ossia quella di essere effettivamente all'interno del range
-                new_long = self._ranges["gps"]["longitude_low"]
-
+            self.set_long_direction(new_long_direction)
             self.set_longitude(new_long)
 
             # VELOCITà - discostamento massimo in un determinato intervallo, in questa maniera rispetto al valore 
             # precedente si mantiene un aggiornamento più sensato
-            new_speed = round( random.random() * (self._ranges["speed_up"] - self._ranges["speed_low"]) + self._ranges["speed_low"], 1 )
-
-            # Verifica velocità generata randomicamente all'interno dell'intervallo di discostamento massimo dalla
-            # precedente misura di velocità
-            if new_speed not in np.arange(prec_speed - speed_span, prec_speed + speed_span + 0.1, 0.1):
-
-                # Verifica presenza dell'intervallo [prec_speed - speed_span, prec_speed + speed_span] all'interno
-                # dell'intervallo generale
-                if ( prec_speed - speed_span ) >= self._ranges["speed_low"] and ( prec_speed + speed_span ) <= self._ranges["speed_up"] and ( prec_speed + speed_span ) >= ( prec_speed - speed_span ):
-                    self.set_speed( round( random.random() * (( prec_speed + speed_span ) - ( prec_speed - speed_span )) + ( prec_speed - speed_span ), 1 ) )
-                # Verifica uscita dall'intervallo generale dell'estremo inferiore
-                elif ( prec_speed - speed_span ) < self._ranges["speed_low"] and ( prec_speed + speed_span ) <= self._ranges["speed_up"] and ( prec_speed + speed_span ) >= self._ranges["speed_low"]:
-                    self.set_speed( round( random.random() * (( prec_speed + speed_span ) - self._ranges["speed_low"]) + self._ranges["speed_low"], 1 ) )
-                # Uscita dall'intervallo generale dell'estremo superiore
-                elif ( prec_speed + speed_span ) > self._ranges["speed_up"] and ( prec_speed - speed_span ) >= self._ranges["speed_low"] and self._ranges["speed_up"] >= ( prec_speed - speed_span ):
-                    self.set_speed( round( random.random() * (self._ranges["speed_up"] - ( prec_speed - speed_span )) + ( prec_speed - speed_span ), 1 ) )
-                else:
-                    # Alternativa prevista nel caso in cui venga utilizzato l'oggetto con chiamata unica al metodo e non
-                    # all'interno di un ciclo come nell'utilizzo previsto, per cui nel caso in cui i metodi vengano utilizzati
-                    # come una sorta di API. Per questo stesso motivo è stata aggiunta la condizione che riguarda i due estremi
-                    # , ossia che l'estremo superiore utilizzato per l'aggiornamento sia effettivamente maggiore o uguale di
-                    # quello inferiore utilizzato nell'aggiornamento
-                    self.set_speed(initial_speed)
-
-            else:
-                self.set_speed( new_speed )
+            new_speed = self._generate_floating_point_or_integer_metric(up_limit=self._ranges["speed_up"], low_limit=self._ranges["speed_low"], past_metric=prec_speed, metric_span=speed_span, integer=False, initial=True, environment=False, initial_metric=initial_speed, digit_to_round=1)
+            
+            self.set_speed( new_speed )
 
             # PRESSIONE GOMME - discostamento massimo in un determinato intervallo, in questa maniera rispetto al valore 
             # precedente si mantiene un aggiornamento più sensato
-            new_tyre_pressure = round( random.random() * (self._ranges["tyre_pressure_up"] - self._ranges["tyre_pressure_low"]) + self._ranges["tyre_pressure_low"], 2 )
+            new_tyre_pressure = self._generate_floating_point_or_integer_metric(up_limit=self._ranges["tyre_pressure_up"], low_limit=self._ranges["tyre_pressure_low"], past_metric=prec_tyre_pressure, metric_span=tyre_span, integer=False, initial=False, environment=False, digit_to_round=2)
 
-            # Verifica pressione gomme generata randomicamente all'interno dell'intervallo di discostamento massimo dalla
-            # precedente misura di pressione gomme
-            if new_tyre_pressure not in np.arange(prec_tyre_pressure - tyre_span, prec_tyre_pressure + tyre_span + 0.01, 0.01):
-
-                # Verifica presenza dell'intervallo [prec_tyre_pressure - tyre_span, prec_tyre_pressure + tyre_span] all'interno
-                # dell'intervallo generale
-                if ( prec_tyre_pressure - tyre_span ) >= self._ranges["tyre_pressure_low"] and ( prec_tyre_pressure + tyre_span ) <= self._ranges["tyre_pressure_up"] and ( prec_tyre_pressure + tyre_span ) >= ( prec_tyre_pressure - tyre_span ):
-                    self.set_tyre_pressure( round( random.random() * (( prec_tyre_pressure + tyre_span ) - ( prec_tyre_pressure - tyre_span )) + ( prec_tyre_pressure - tyre_span ), 2 ) )
-                # Verifica uscita dall'intervallo generale dell'estremo inferiore
-                elif ( prec_tyre_pressure - tyre_span ) < self._ranges["tyre_pressure_low"] and ( prec_tyre_pressure + tyre_span ) <= self._ranges["tyre_pressure_up"] and ( prec_tyre_pressure + tyre_span ) >= self._ranges["tyre_pressure_low"]:
-                    self.set_tyre_pressure( round( random.random() * (( prec_tyre_pressure + tyre_span ) - self._ranges["tyre_pressure_low"]) + self._ranges["tyre_pressure_low"], 2 ) )
-                # Uscita dall'intervallo generale dell'estremo superiore
-                elif ( prec_tyre_pressure + tyre_span ) > self._ranges["tyre_pressure_up"] and ( prec_tyre_pressure - tyre_span ) >= self._ranges["tyre_pressure_low"] and self._ranges["tyre_pressure_up"] >= ( prec_tyre_pressure - tyre_span ):
-                    self.set_tyre_pressure( round( random.random() * (self._ranges["tyre_pressure_up"] - ( prec_tyre_pressure - tyre_span )) + ( prec_tyre_pressure - tyre_span ), 2 ) )
-                else:
-                    # Alternativa prevista nel caso in cui venga utilizzato l'oggetto con chiamata unica al metodo e non
-                    # all'interno di un ciclo come nell'utilizzo previsto, per cui nel caso in cui i metodi vengano utilizzati
-                    # come una sorta di API. Per questo stesso motivo è stata aggiunta la condizione che riguarda i due estremi
-                    # , ossia che l'estremo superiore utilizzato per l'aggiornamento sia effettivamente maggiore o uguale di
-                    # quello inferiore utilizzato nell'aggiornamento
-                    self.set_tyre_pressure(self._ranges["tyre_pressure_up"])
-
-            else:
-                self.set_tyre_pressure( new_tyre_pressure )
+            self.set_tyre_pressure( new_tyre_pressure )
 
             # Verifica sulla frequenza delle fermate, in modo che la fermata del bus avvenga solamente una volta ogni
             # 120s, il che è più verosimile della variazione ogni 5 secondi come per le altre metriche.
@@ -546,142 +611,39 @@ class Autobus:
             if fermata_bus == 25:
                 # NUMERO PASSEGGERI - discostamento massimo in un determinato intervallo, in questa maniera rispetto al valore 
                 # precedente si mantiene un aggiornamento più sensato
-                new_psg = random.randrange(self._ranges["num_psg_low"], self._ranges["num_psg_up"])
+                new_psg = self._generate_floating_point_or_integer_metric(up_limit=self._ranges["num_psg_up"], low_limit=self._ranges["num_psg_low"], past_metric=prec_num_psg, metric_span=psg_span, integer=True, initial=True, environment=False, initial_metric=initial_num_psg)
 
-                # Verifica numero passeggeri generata randomicamente all'interno dell'intervallo di discostamento massimo dalla
-                # precedente misura di numero passeggeri
-                if new_psg not in range(prec_num_psg - psg_span, prec_num_psg + psg_span):
-
-                    # Verifica presenza dell'intervallo [prec_num_psg - psg_span, prec_num_psg + psg_span] all'interno
-                    # dell'intervallo generale
-                    if ( prec_num_psg - psg_span ) >= self._ranges["num_psg_low"] and ( prec_num_psg + psg_span ) <= self._ranges["num_psg_up"] and ( prec_num_psg + psg_span ) >= ( prec_num_psg - psg_span ):
-                        self.set_num_psg( random.randrange( (prec_num_psg - psg_span), (prec_num_psg + psg_span) ) )
-                    # Verifica uscita dall'intervallo generale dell'estremo inferiore
-                    elif ( prec_num_psg - psg_span ) < self._ranges["num_psg_low"] and ( prec_num_psg + psg_span ) <= self._ranges["num_psg_up"] and ( prec_num_psg + psg_span ) >= self._ranges["num_psg_low"]:
-                        self.set_num_psg( random.randrange( self._ranges["num_psg_low"], (prec_num_psg + psg_span) ) )
-                    # Uscita dall'intervallo generale dell'estremo superiore
-                    elif ( prec_num_psg + psg_span ) > self._ranges["num_psg_up"] and ( prec_num_psg - psg_span ) >= self._ranges["num_psg_low"] and self._ranges["num_psg_up"] >= ( prec_num_psg - psg_span ):
-                        self.set_num_psg( random.randrange( (prec_num_psg - psg_span), self._ranges["num_psg_up"] ) )
-                    else:
-                        # Alternativa prevista nel caso in cui venga utilizzato l'oggetto con chiamata unica al metodo e non
-                        # all'interno di un ciclo come nell'utilizzo previsto, per cui nel caso in cui i metodi vengano utilizzati
-                        # come una sorta di API. Per questo stesso motivo è stata aggiunta la condizione che riguarda i due estremi
-                        # , ossia che l'estremo superiore utilizzato per l'aggiornamento sia effettivamente maggiore o uguale di
-                        # quello inferiore utilizzato nell'aggiornamento
-                        self.set_num_psg(initial_num_psg)
-
-                else:
-                    self.set_num_psg( new_psg )
+                self.set_num_psg( new_psg )
 
                 fermata_bus = 1
 
             # TEMPERATURA - discostamento massimo in un determinato intervallo, in questa maniera rispetto al valore 
             # precedente si mantiene un aggiornamento più sensato
-            new_temp = round( random.random() * (self._ranges["environmental"]["temp_up"] - self._ranges["environmental"]["temp_low"]) + self._ranges["environmental"]["temp_low"], 3 )
+            new_temp = self._generate_floating_point_or_integer_metric(up_limit=self._ranges["environmental"]["temp_up"], low_limit=self._ranges["environmental"]["temp_low"], past_metric=prec_temperature, metric_span=temp_span, integer=False, initial=False, environment=True, digit_to_round=3)
 
-            # Verifica temperatura generata randomicamente all'interno dell'intervallo di discostamento massimo dalla
-            # precedente misura di temperatura
-            if new_temp not in np.arange(prec_temperature - temp_span, prec_temperature + temp_span + 0.001, 0.001):
-
-                # Verifica presenza dell'intervallo [prec_temperature - temp_span, prec_temperature + temp_span] all'interno
-                # dell'intervallo generale
-                if ( prec_temperature - temp_span ) >= self._ranges["environmental"]["temp_low"] and ( prec_temperature + temp_span ) <= self._ranges["environmental"]["temp_up"] and ( prec_temperature + temp_span ) >= ( prec_temperature - temp_span ):
-                    self.set_temperature( round( random.random() * (( prec_temperature + temp_span ) - ( prec_temperature - temp_span )) + ( prec_temperature - temp_span ), 3 ) )
-                # Verifica uscita dall'intervallo generale dell'estremo inferiore
-                elif ( prec_temperature - temp_span ) < self._ranges["environmental"]["temp_low"] and ( prec_temperature + temp_span ) <= self._ranges["environmental"]["temp_up"] and ( prec_temperature + temp_span ) >= self._ranges["environmental"]["temp_low"]:
-                    self.set_temperature( round( random.random() * (( prec_temperature + temp_span ) - self._ranges["environmental"]["temp_low"]) + self._ranges["environmental"]["temp_low"], 3 ) )
-                # Uscita dall'intervallo generale dell'estremo superiore
-                elif ( prec_temperature + temp_span ) > self._ranges["environmental"]["temp_up"] and ( prec_temperature - temp_span ) >= self._ranges["environmental"]["temp_low"] and self._ranges["environmental"]["temp_up"] >= ( prec_temperature - temp_span ):
-                    self.set_temperature( round( random.random() * (self._ranges["environmental"]["temp_up"] - ( prec_temperature - temp_span )) + ( prec_temperature - temp_span ), 3 ) )
-                else:
-                    # Alternativa prevista nel caso in cui venga utilizzato l'oggetto con chiamata unica al metodo e non
-                    # all'interno di un ciclo come nell'utilizzo previsto, per cui nel caso in cui i metodi vengano utilizzati
-                    # come una sorta di API. Per questo stesso motivo è stata aggiunta la condizione che riguarda i due estremi
-                    # , ossia che l'estremo superiore utilizzato per l'aggiornamento sia effettivamente maggiore o uguale di
-                    # quello inferiore utilizzato nell'aggiornamento
-                    self.set_temperature( round( random.random() * (self._ranges["environmental"]["temp_up"] - self._ranges["environmental"]["temp_low"]) + self._ranges["environmental"]["temp_low"], 3 ) )
-
-            else:
-                self.set_temperature( new_temp )
+            self.set_temperature( new_temp )
 
             # UMIDITà - discostamento massimo in un determinato intervallo, in questa maniera rispetto al valore 
             # precedente si mantiene un aggiornamento più sensato
-            new_hum = round( random.random() * (self._ranges["environmental"]["hum_up"] - self._ranges["environmental"]["hum_low"]) + self._ranges["environmental"]["hum_low"], 3 )
+            new_hum = self._generate_floating_point_or_integer_metric(up_limit=self._ranges["environmental"]["hum_up"], low_limit=self._ranges["environmental"]["hum_low"], past_metric=prec_humidity, metric_span=hum_span, integer=False, initial=False, environment=True, digit_to_round=3)
 
-            # Verifica umidità generata randomicamente all'interno dell'intervallo di discostamento massimo dalla
-            # precedente misura di umidità
-            if new_hum not in np.arange(prec_humidity - hum_span, prec_humidity + hum_span + 0.001, 0.001):
-
-                # Verifica presenza dell'intervallo [prec_humidity - hum_span, prec_humidity + hum_span] all'interno
-                # dell'intervallo generale
-                if ( prec_humidity - hum_span ) >= self._ranges["environmental"]["hum_low"] and ( prec_humidity + hum_span ) <= self._ranges["environmental"]["hum_up"] and ( prec_humidity + hum_span ) >= ( prec_humidity - hum_span ):
-                    self.set_humidity( round( random.random() * (( prec_humidity + hum_span ) - ( prec_humidity - hum_span )) + ( prec_humidity - hum_span ), 3 ) )
-                # Verifica uscita dall'intervallo generale dell'estremo inferiore
-                elif ( prec_humidity - hum_span ) < self._ranges["environmental"]["hum_low"] and ( prec_humidity + hum_span ) <= self._ranges["environmental"]["hum_up"] and ( prec_humidity + hum_span ) >= self._ranges["environmental"]["hum_low"]:
-                    self.set_humidity( round( random.random() * (( prec_humidity + hum_span ) - self._ranges["environmental"]["hum_low"]) + self._ranges["environmental"]["hum_low"], 3 ) )
-                # Uscita dall'intervallo generale dell'estremo superiore
-                elif ( prec_humidity + hum_span ) > self._ranges["environmental"]["hum_up"] and ( prec_humidity - hum_span ) >= self._ranges["environmental"]["hum_low"] and self._ranges["environmental"]["hum_up"] >= ( prec_humidity - hum_span ):
-                    self.set_humidity( round( random.random() * (self._ranges["environmental"]["hum_up"] - ( prec_humidity - hum_span )) + ( prec_humidity - hum_span ), 3 ) )
-                else:
-                    # Alternativa prevista nel caso in cui venga utilizzato l'oggetto con chiamata unica al metodo e non
-                    # all'interno di un ciclo come nell'utilizzo previsto, per cui nel caso in cui i metodi vengano utilizzati
-                    # come una sorta di API. Per questo stesso motivo è stata aggiunta la condizione che riguarda i due estremi
-                    # , ossia che l'estremo superiore utilizzato per l'aggiornamento sia effettivamente maggiore o uguale di
-                    # quello inferiore utilizzato nell'aggiornamento
-                    self.set_humidity( round( random.random() * (self._ranges["environmental"]["hum_up"] - self._ranges["environmental"]["hum_low"]) + self._ranges["environmental"]["hum_low"], 3 ) )
-
-            else:
-                self.set_humidity( new_hum )
+            self.set_humidity( new_hum )
 
             # STATO IMPIANTO FRENANTE - discostamento massimo in un determinato intervallo, in questa maniera rispetto al
             # valore precedente si mantiene un aggiornamento più sensato. Leggera differenza operando su di una lista, si 
             # prende direttamente il valore precedente e si forma una nuova lista da cui pescare random solamente con
             # l'elemento precedente e il successivo e il precedente
-            new_brake_list = []
+            new_brake_status = self._generate_status_metric(status_list=self._ranges["brake_status"], past_metric=prec_brake_status)
 
-            # Verifica che la stringa precedente sia non vuota, questo per assicurare che l'utilizzo avvenga all'interno di un
-            # ciclo, come da utilizzo inteso dell'oggetto
-            if prec_brake_status != "":
-                prec_b_index = self._ranges["brake_status"].index(prec_brake_status)
-                if (prec_b_index - 1) >= 0 and (prec_b_index + 1) < len(self._ranges["brake_status"]):
-                    new_brake_list = [self._ranges["brake_status"][prec_b_index - 1], prec_brake_status, self._ranges["brake_status"][prec_b_index + 1]]
-                elif (prec_b_index - 1) < 0:
-                    new_brake_list = [prec_brake_status, self._ranges["brake_status"][prec_b_index + 1]]
-                elif (prec_b_index + 1) >= len(self._ranges["brake_status"]):
-                    new_brake_list = [self._ranges["brake_status"][prec_b_index - 1], prec_brake_status]
-            else:
-                # Alternativa prevista nel caso in cui venga utilizzato l'oggetto con chiamata unica al metodo e non
-                # all'interno di un ciclo come nell'utilizzo previsto, per cui nel caso in cui i metodi vengano utilizzati
-                # come una sorta di API. Per questo stesso motivo è stata aggiunta la verifica sulla stringa precedente
-                # , ossia che sia non vuota per prevenire eventuali errori indesiderati
-                new_brake_list = [self._ranges["brake_status"][-3], self._ranges["brake_status"][-2], self._ranges["brake_status"][-1]]
-            
-            self.set_brake_status(random.choice(new_brake_list))
+            self.set_brake_status(new_brake_status)
 
             # STATO MOTORE - discostamento massimo in un determinato intervallo, in questa maniera rispetto al valore 
             # precedente si mantiene un aggiornamento più sensato. Leggera differenza operando su di una lista, si prende
             # direttamente il valore precedente e si forma una nuova lista da cui pescare random solamente con l'elemento
             # precedente e il successivo e il precedente
-            new_engine_list = []
+            new_engine_status = self._generate_status_metric(status_list=self._ranges["engine_status"], past_metric=prec_engine_status)
 
-            # Verifica che la stringa precedente sia non vuota, questo per assicurare che l'utilizzo avvenga all'interno di un
-            # ciclo, come da utilizzo inteso dell'oggetto
-            if prec_engine_status != "":
-                prec_e_index = self._ranges["engine_status"].index(prec_engine_status)
-                if (prec_e_index - 1) >= 0 and (prec_e_index + 1) < len(self._ranges["engine_status"]):
-                    new_engine_list = [self._ranges["engine_status"][prec_e_index - 1], prec_engine_status, self._ranges["engine_status"][prec_e_index + 1]]
-                elif (prec_e_index - 1) < 0:
-                    new_engine_list = [prec_engine_status, self._ranges["engine_status"][prec_e_index + 1]]
-                elif (prec_e_index + 1) >= len(self._ranges["engine_status"]):
-                    new_engine_list = [self._ranges["engine_status"][prec_e_index - 1], prec_engine_status]
-            else:
-                # Alternativa prevista nel caso in cui venga utilizzato l'oggetto con chiamata unica al metodo e non
-                # all'interno di un ciclo come nell'utilizzo previsto, per cui nel caso in cui i metodi vengano utilizzati
-                # come una sorta di API. Per questo stesso motivo è stata aggiunta la verifica sulla stringa precedente
-                # , ossia che sia non vuota per prevenire eventuali errori indesiderati
-                new_engine_list = [self._ranges["engine_status"][-3], self._ranges["engine_status"][-2], self._ranges["engine_status"][-1]]
-
-            self.set_engine_status(random.choice(new_engine_list))
+            self.set_engine_status(new_engine_status)
 
         return fermata_bus
 
