@@ -519,6 +519,24 @@ class Autobus:
 
         self._msg_queue.append(el)
 
+    # Emptiness 'msg_queue' parameter
+    def _is_msg_queue_empty(self) -> bool:
+        return len(self._msg_queue) == 0
+
+    # Peek 'msg_queue' parameter
+    def _peek_msg_queue(self):
+        if not self._msg_queue:
+            return None
+
+        return self._msg_queue[0]
+
+    # Pop 'msg_queue' parameter
+    def _pop_msg_queue(self):
+        if not self._msg_queue:
+            raise IndexError("Errore! La coda dei messaggi è vuota")
+
+        return self._msg_queue.pop(0)
+
     # Getter 'data_to_send' parameter
     def get_data_to_send(self):
         return deepcopy(self._data_to_send)
@@ -857,8 +875,9 @@ class Autobus:
     # Pubblicazione del messaggio e attesa - metodo necessario al fine di raccogliere la funzionalità di pubblicazione del
     # messaggio e attesa di un timeout. Il messaggio viene pubblicato su un topic a scelta, attraverso il client fornito, 
     # attendendo uno specifico timeout, anch'esso passato come argomento. Il flag 'queued' permette di distinguere se il
-    # messaggio proviene dalla coda di messaggi impostata oppure no 
-    def _publish_message_and_wait(self, client: mqtt.Client, timeout: float, topic: str, message: str, queued: bool) -> None:
+    # messaggio proviene dalla coda di messaggi impostata oppure no, mentre il flag 'alarm' permette di distinguere un
+    # messaggio di allarme da uno di telemetria
+    def _publish_message_and_wait(self, client: mqtt.Client, timeout: float, topic: str, message: str | bytes, queued: bool, alarm: bool) -> bool:
         # Publish con QoS 1 per assicurare la consegna del messaggio in coda
         msginfo = client.publish(topic=topic, payload=message, qos=1)
 
@@ -871,14 +890,27 @@ class Autobus:
             print(f"Uscita da wait_for_publish() --> timeout di {timeout} s scaduto", end="")
             if queued:
                 print(" (messaggio in coda)")
+            elif alarm:
+                print(" (allarme)")
             else:
                 print()
         else:
             print(f"Uscita da wait_for_publish() con successo della pubblicazione sul broker del messaggio", end="")
             if queued:
                 print(" in coda")
+            elif alarm:
+                print(" di allarme")
             else:
                 print(" corrente")
+
+        # Verifica del corretto avvenimento della pubblicazione del messaggio con l'utilizzo del reason code fornito dal
+        # messaggio e della funzione 'is_published' dedicata
+        published = (
+            msginfo.rc == MQTTErrorCode.MQTT_ERR_SUCCESS
+            and msginfo.is_published()
+        )
+
+        return published
 
     # Comunicazione - comunicazione verso il sistema di Ingestion, ovverosia trasmissione del "pacchetto" dati verso 
     # il broker MQTT, e successiva predisposizione di un bridge per la comunicazione al sistema di Ingestion, ossia
@@ -888,7 +920,7 @@ class Autobus:
         mqtt_timeout = self.get_timeout()
         payload = self.get_formatted_data_to_send()
         topic_to_publish = self.get_topic()
-        msg_queue = self.get_msg_queue()
+        flushed = True
 
         # Verifica messaggio di allarme da comunicare e conseguente assegnazione di messaggio e topic passati come 
         # argomenti di funzione
@@ -899,20 +931,52 @@ class Autobus:
         # Verifica connessione client to broker
         if mqtt_client.is_connected():
             # Verifica messaggi in coda. Per ogni messaggio in coda avviene la pubblicazione di quest'ultimo, in
-            # maniera antecedente al messaggio attuale
-            for msg in msg_queue:
+            # maniera antecedente al messaggio attuale. Nel momento in cui la pubblicazione dovesse fallire viene interrotta
+            # la pubblicazione dei messaggi in coda. Gestione FIFO della coda
+            while not self._is_msg_queue_empty():
+                # Estrazione del primo messaggio dalla coda
+                queued_topic, queued_message = self._peek_msg_queue()
+                
                 # Pubblicazione del messaggio in coda e attesa
-                self._publish_message_and_wait(client=mqtt_client, timeout=mqtt_timeout, topic=msg[0], message=msg[1], queued=True)
+                published = self._publish_message_and_wait(client=mqtt_client, timeout=mqtt_timeout, topic=queued_topic, message=queued_message, queued=True, alarm=alarm)
 
-            # Cancellazione dalla coda di tutti i messaggi precedentemente in attesa
-            self._clear_msg_queue()
+                # Verifica pubblicazione messaggio in coda
+                if published:
+                    # Pop del messaggio in testa alla coda
+                    self._pop_msg_queue()
+                else:
+                    flushed = False
+                    break
 
-            # Pubblicazione del messaggio e attesa
-            self._publish_message_and_wait(client=mqtt_client, timeout=mqtt_timeout, topic=topic_to_publish, message=payload, queued=False)
+            # Verifica pubblicazione dell'intero contenuto della coda
+            if flushed:
+                # Pubblicazione del messaggio e attesa
+                published = self._publish_message_and_wait(client=mqtt_client, timeout=mqtt_timeout, topic=topic_to_publish, message=payload, queued=False, alarm=alarm)
+
+                # Verifica pubblicazione messaggio corrente, se fallita --> accodamento
+                if not published:
+                    # Aggiunta (topic, messaggio) non inviato alla coda di messaggi in attesa
+                    self._append_msg_queue(el=(topic_to_publish, payload))
+                    if not alarm:
+                        print("Pubblicazione fallita --> messaggio in coda...")
+                    else:
+                        print("Pubblicazione fallita --> messaggio di allarme in coda...")
+            # Pubblicazione dell'intero contenuto della coda fallita --> accodamento messaggio corrente
+            else:
+                # Aggiunta (topic, messaggio) non inviato alla coda di messaggi in attesa
+                self._append_msg_queue(el=(topic_to_publish, payload))
+                if not alarm:
+                    print("Pubblicazione coda fallita --> messaggio in coda...")
+                else:
+                    print("Pubblicazione coda fallita --> messaggio di allarme in coda...")
+        # Connessione assente --> accodamento messaggio corrente
         else:
             # Aggiunta (topic, messaggio) non inviato alla coda di messaggi in attesa
             self._append_msg_queue(el=(topic_to_publish, payload))
-            print("Connessione assente --> messaggio in coda...")
+            if not alarm:
+                print("Connessione assente --> messaggio in coda...")
+            else:
+                print("Connessione assente --> messaggio di allarme in coda...")
         
         # Rimozione dello stop del loop per due motivi:
         #   1. Stoppando il loop se la disconnessione al broker avviene nel mentre che il thread del loop non è "vivo"
