@@ -1,11 +1,5 @@
 import random
-import socket
-import sys
-import time
 from copy import deepcopy
-
-import numpy as np
-from paho.mqtt.enums import MQTTErrorCode
 
 from avm.autobus import Autobus
 
@@ -44,13 +38,8 @@ class AutobusElettrico(Autobus):
         self._battery_temp = 0.0
 
         # Set up soglie per gestione livello batteria
-        self._static_threshold = 20.0
-
-        self._threshold_list = []
-        for i in np.arange(self._ranges["battery_lvl_low"], self._static_threshold + 1, 1.0):
-            self._threshold_list.append( float(i) )
-
-        self._dynamic_threshold = random.choice(self._threshold_list)
+        static_threshold = 20.0
+        self._initialize_thresholds(list_lower_bound=self._ranges["battery_lvl_low"], static_threshold=static_threshold)
 
         # "Pacchetto" dati specifico per la motorizzazione elettrica
         self._updated_data = {
@@ -65,51 +54,11 @@ class AutobusElettrico(Autobus):
         # grado di sicurezza ed essere coperti da eventuali modifiche si utilizza la copia profonda
 
         # Definizione topic MQTT
-        self._topic = "AVM/telemetry/autobus/electric"
+        topic = "AVM/telemetry/autobus/electric"
+        self._set_topic(topic)
 
         # Connessione al broker MQTT
         self._connect_to_mqtt_broker()
-
-        # Coda di messaggi, prevalentemente predisposta per ritardo nel tempo di setup della connessione al broker MQTT
-        self._msg_queue = []
-
-    # Connessione Broker MQTT - setup della connessione verso il broker MQTT, impostazione di client_id e dell'effettiva 
-    # connessione, con gestione di eventuali errori legati ad indirizzo errato o a broker non disponibile
-    def _connect_to_mqtt_broker(self):
-        mqtt_client = self.get_mqtt_client()
-        host = self.get_host()
-        port = self.get_port()
-        client_id = "autobus_" + self.get_LP()
-
-        # Inizializzazione var per contenere return value della connessione al broker MQTT
-        err = None
-
-        # Impostazione client_id
-        self.set_mqtt_client_id(client_id.encode())
-        try:
-            # Connessione verso il broker MQTT
-            err = mqtt_client.connect(host=host, port=port, keepalive=60)
-        except socket.gaierror:
-            sys.stderr.write("Errore! Impossibile risolvere l'indirizzo fornito\n")
-            sys.exit(-22)
-        except ConnectionRefusedError:
-            sys.stderr.write("Errore! Connessione rifiutata\n")
-            sys.exit(-23)
-        else:
-            # Verifica buon fine connessione
-            if err == MQTTErrorCode.MQTT_ERR_SUCCESS:
-                # Utilizzo del metodo loop_start() che concede di non preoccuparsi di funzionalità utili come la 
-                # riconnessione automatica al broker MQTT. Creazione di un thread separato per effettuare le operazioni
-                # che seguono
-                err_l = mqtt_client.loop_start()
-
-                # Verifica buon fine start background thread
-                if err_l != MQTTErrorCode.MQTT_ERR_SUCCESS:
-                    print("Errore! Mancata esecuzione del background thread per la comunicazione\n")
-                    sys.exit(-24)
-            else:
-                print("Errore! Connessione non avvenuta\n")
-                sys.exit(-25)
 
     # Getter 'battery_lvl' parameter
     def get_battery_lvl(self):
@@ -149,79 +98,6 @@ class AutobusElettrico(Autobus):
         self._updated_data.update(updated_data)
         self._data_to_send["collected_metrics"]["electric"].update(updated_data)
 
-    # Getter 'threshold_list' parameter
-    def get_threshold_list(self):
-        return deepcopy(self._threshold_list)
-    
-    # Setter 'threshold_list' parameter
-    def set_threshold_list(self, threshold_list: list):
-        if type(threshold_list) is not list:
-            raise TypeError(f"Errore! Il tipo del parametro passato deve essere 'list'. Ricevuto {type(threshold_list)}")
-        
-        self._threshold_list = deepcopy(threshold_list)
-
-    # Getter 'static_threshold' parameter
-    def get_static_threshold(self):
-        return self._static_threshold
-
-    # Setter 'static_threshold' parameter
-    def set_static_threshold(self, static_threshold: float):
-        if type(static_threshold) is not float:
-            raise TypeError(f"Errore! Il tipo del parametro passato deve essere 'float'. Ricevuto {type(static_threshold)}")
-        
-        self._static_threshold = static_threshold
-
-        # Modifica della lista da cui generare la soglia dinamica di rifornimento e reimpostazione di questa
-        threshold_list = self.get_threshold_list()
-        # Verifica che la nuova soglia statica sia maggiore dell'ultimo elemento della lista (soglia precedente)
-        if static_threshold > threshold_list[-1]:
-            # In questo caso si genera una nuova lista per estendere la precedente
-            #   [a, b] && c > b --> [a, b, b+1, c]
-            extend_list = []
-            for i in np.arange(threshold_list[-1] + 1, static_threshold + 1, 1.0):
-                extend_list.append(i)
-            
-            threshold_list.extend(extend_list)
-        # Verifica che la nuova soglia sia al contrario minore dell'ultimo elemento della lista (soglia precedente), 
-        # e un numero non negativo
-        elif static_threshold < threshold_list[-1] and static_threshold >= 0.0:
-            # In questo caso si "taglia" la vecchia lista all'indice dell'elemento già presente al suo interno
-            #   [a, b] && c < b --> [a, c]
-            upper_bound = threshold_list.index(static_threshold)
-            threshold_list = threshold_list[0:upper_bound+1]
-        
-        self.set_threshold_list(threshold_list)
-
-    # Getter 'dynamic_threshold' parameter
-    def get_dynamic_threshold(self):
-        return self._dynamic_threshold
-
-    # Setter 'dynamic_threshold' parameter
-    def set_dynamic_threshold(self, dynamic_threshold: float):
-        if type(dynamic_threshold) is not float:
-            raise TypeError(f"Errore! Il tipo del parametro passato deve essere 'float'. Ricevuto {type(dynamic_threshold)}")
-        
-        self._dynamic_threshold = dynamic_threshold
-
-    # Getter 'topic' parameter
-    def get_topic(self):
-        return self._topic
-
-    # Getter 'msg_queue' parameter
-    def get_msg_queue(self):
-        return self._msg_queue.copy()
-                
-    # Clear 'msg_queue' parameter
-    def clear_msg_queue(self):
-        self._msg_queue.clear()
-
-    # Append 'msg_queue' parameter
-    def append_msg_queue(self, el: tuple):
-        if type(el) is not tuple:
-            raise TypeError(f"Errore! Il tipo del parametro passato deve essere 'tuple'. Ricevuto {type(el)}")
-
-        self._msg_queue.append(el)
-
     # Simulazione Metriche - metodo che permette di generare ed aggiornare le metriche da comprendere successivamente nel
     # "pacchetto" dati da inviare, attraverso il protocollo di comunicazione MQTT, al sistema di Ingestion. L'aggiornamento
     # avviene in maniera elaborata per sembrare maggiormente verosimile
@@ -250,120 +126,17 @@ class AutobusElettrico(Autobus):
 
             # LIVELLO BATTERIA - diminuzione di una quantità predefinita, ai fini di simulare la durata di una carica
             # della batteria in maniera verosimile
-            new_bt_lvl = 0
+            new_battery_level = self._generate_level_metric(past_level=prec_bt_lvl, level_span=bt_lvl_span, lower_level_bound=self._ranges["battery_lvl_low"], upper_level_bound=self._ranges["battery_lvl_up"])
             
-            # Verifica che la quantità di batteria rimasta sia superiore alla soglia dinamica decisa
-            if prec_bt_lvl >= self.get_dynamic_threshold():
-                # Diminuzione quantità predefinita
-                bt_update = round(prec_bt_lvl - bt_lvl_span, 2)
-                # Verifica che la diminuzione non abbia comportato un livello negativo
-                if bt_update >= self._ranges["battery_lvl_low"]:
-                    new_bt_lvl = bt_update
-                else:
-                    new_bt_lvl = self._ranges["battery_lvl_low"]
-            # Se la quantità di batteria rimasta non supera la soglia allora si simula la ricarica della batteria
-            # riportando il livello al massimo e si cambia la soglia, in modo da simulare una variabilità del momento
-            # in cui la ricarica viene effettuata
-            else:
-                new_bt_lvl = self._ranges["battery_lvl_up"]
-                self.set_dynamic_threshold(random.choice(self.get_threshold_list()))
-            
-            self.set_battery_lvl(new_bt_lvl)
+            self.set_battery_lvl(new_battery_level)
 
             # TEMPERATURA BATTERIA - discostamento massimo in un determinato intervallo, in questa maniera rispetto al valore 
             # precedente si mantiene un aggiornamento più sensato
-            new_bt_temp = round( random.random() * (self._ranges["battery_temp_up"] - self._ranges["battery_temp_low"]) + self._ranges["battery_temp_low"], 2 )
+            new_battery_temperature = self._generate_floating_point_or_integer_metric(up_limit=self._ranges["battery_temp_up"], low_limit=self._ranges["battery_temp_low"], past_metric=prec_bt_temp, metric_span=bt_temp_span, integer=False, initial=True, environment=False, initial_metric=initial_battery_temp, digit_to_round=2)
 
-            # Verifica livello batteria generato randomicamente all'interno dell'intervallo di discostamento massimo dalla
-            # precedente misura di livello batteria
-            if new_bt_temp not in np.arange(prec_bt_temp - bt_temp_span, prec_bt_temp + bt_temp_span + 0.01, 0.01):
-
-                # Verifica presenza dell'intervallo [prec_bt_temp - bt_temp_span, prec_bt_temp + bt_temp_span] all'interno
-                # dell'intervallo generale
-                if ( prec_bt_temp - bt_temp_span ) >= self._ranges["battery_temp_low"] and ( prec_bt_temp + bt_temp_span ) <= self._ranges["battery_temp_up"] and ( prec_bt_temp + bt_temp_span ) >= ( prec_bt_temp - bt_temp_span ):
-                    self.set_battery_temp( round( random.random() * (( prec_bt_temp + bt_temp_span ) - ( prec_bt_temp - bt_temp_span )) + ( prec_bt_temp - bt_temp_span ), 2 ) )
-                # Verifica uscita dall'intervallo generale dell'estremo inferiore
-                elif ( prec_bt_temp - bt_temp_span ) < self._ranges["battery_temp_low"] and ( prec_bt_temp + bt_temp_span ) <= self._ranges["battery_temp_up"] and ( prec_bt_temp + bt_temp_span ) >= self._ranges["battery_temp_low"]:
-                    self.set_battery_temp( round( random.random() * (( prec_bt_temp + bt_temp_span ) - self._ranges["battery_temp_low"]) + self._ranges["battery_temp_low"], 2 ) )
-                # Uscita dall'intervallo generale dell'estremo superiore
-                elif ( prec_bt_temp + bt_temp_span ) > self._ranges["battery_temp_up"] and ( prec_bt_temp - bt_temp_span ) >= self._ranges["battery_temp_low"] and self._ranges["battery_temp_up"] >= ( prec_bt_temp - bt_temp_span ):
-                    self.set_battery_temp( round( random.random() * (self._ranges["battery_temp_up"] - ( prec_bt_temp - bt_temp_span )) + ( prec_bt_temp - bt_temp_span ), 2 ) )
-                else:
-                    # Alternativa prevista nel caso in cui venga utilizzato l'oggetto con chiamata unica al metodo e non
-                    # all'interno di un ciclo come nell'utilizzo previsto, per cui nel caso in cui i metodi vengano utilizzati
-                    # come una sorta di API. Per questo stesso motivo è stata aggiunta la condizione che riguarda i due estremi
-                    # , ossia che l'estremo superiore utilizzato per l'aggiornamento sia effettivamente maggiore o uguale di
-                    # quello inferiore utilizzato nell'aggiornamento
-                    self.set_battery_temp(initial_battery_temp)
-
-            else:
-                self.set_battery_temp( new_bt_temp )
+            self.set_battery_temp( new_battery_temperature )
 
         return fermata_bus
-
-    # Comunicazione - comunicazione verso il sistema di Ingestion, ovverosia trasmissione del "pacchetto" dati verso 
-    # il broker MQTT, e successiva predisposizione di un bridge per la comunicazione al sistema di Ingestion, ossia
-    # Kafka
-    def communicate(self, alarm=False, topic="AVM/info", message="hello"):
-        mqtt_client = self.get_mqtt_client()
-        mqtt_timeout = self.get_timeout()
-        payload = self.get_formatted_data_to_send()
-        topic_to_publish = self.get_topic()
-        msg_queue = self.get_msg_queue()
-
-        # Verifica messaggio di allarme da comunicare e conseguente assegnazione di messaggio e topic passati come 
-        # argomenti di funzione
-        if alarm:
-            topic_to_publish = topic
-            payload = message
-        
-        # Verifica connessione client to broker
-        if mqtt_client.is_connected():
-            # Verifica messaggi in coda. Per ogni messaggio in coda avviene la pubblicazione di quest'ultimo, in
-            # maniera antecedente al messaggio attuale
-            for msg in msg_queue:
-                # Publish con QoS 1 per assicurare la consegna del messaggio in coda
-                msginfo = mqtt_client.publish(topic=msg[0], payload=msg[1], qos=1)
-
-                # Attesa della pubblicazione del messaggio per assicurare una corretta gestione della QoS desiderata.
-                # QoS = 1 indica una qualità del servizio 'at_least_once'
-                before_wait = time.time()
-                msginfo.wait_for_publish(timeout=mqtt_timeout)
-                after_wait = time.time()
-                if after_wait - before_wait >= mqtt_timeout:
-                    print(f"Uscita da wait_for_publish() --> timeout di {mqtt_timeout} s scaduto (messaggio in coda)")
-                else:
-                    print(f"Uscita da wait_for_publish() con successo della pubblicazione sul broker del messaggio in coda")
-
-            # Cancellazione dalla coda di tutti i messaggi precedentemente in attesa
-            msg_queue.clear()
-            self.clear_msg_queue()
-
-            # Publish con QoS 1 per assicurare la consegna del messaggio corrente
-            msginfo = mqtt_client.publish(topic=topic_to_publish, payload=payload, qos=1)
-
-            # Attesa della pubblicazione del messaggio per assicurare una corretta gestione della QoS desiderata.
-            # QoS = 1 indica una qualità del servizio 'at_least_once'
-            before_wait = time.time()
-            msginfo.wait_for_publish(timeout=mqtt_timeout)
-            after_wait = time.time()
-            if after_wait - before_wait >= mqtt_timeout:
-                print(f"Uscita da wait_for_publish() --> timeout di {mqtt_timeout} s scaduto")
-            else:
-                print(f"Uscita da wait_for_publish() con successo della pubblicazione sul broker del messaggio corrente")
-        else:
-            # Aggiunta (topic, messaggio) non inviato alla coda di messaggi in attesa
-            self.append_msg_queue(el=(topic_to_publish, payload))
-            print("Connessione assente --> messaggio in coda...")
-
-        # Rimozione dello stop del loop per due motivi:
-        #   1. Stoppando il loop se la disconnessione al broker avviene nel mentre che il thread del loop non è "vivo"
-        #      allora si verificherà un errore, mentre non stoppando il thread questo è sempre alive, e di conseguenza
-        #      gestisce correttamente la riconnessione
-        #   2. Stoppando il thread porta un notevole overhead sia nello stop che nella ricreazione di quest'ultimo, per
-        #      cui questo si traduce in un notevole ritardo da parte degli oggetti autobus che devono aspettare che il 
-        #      thread venga stoppato e ricreato (circa 2.5 / 3 secondi)
-        # mqtt_client.loop_stop()
 
     # Stampa a video - stampa a video delle metriche simulate da parte dell'oggetto AutobusElettrico (override)
     def show(self):

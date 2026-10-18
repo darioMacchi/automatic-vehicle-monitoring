@@ -358,7 +358,11 @@ def main():
     # Utilizzo della lista globale di autobus smart con motorizzazione termica
     global termic_bus_list
     for i in range(0, termic_num):
-        termic_bus_list.append(AutobusTermico(ranges=ranges, timeout=delay_mqtt, host=host, port=port))
+        try:
+            termic_bus_list.append(AutobusTermico(ranges=ranges, timeout=delay_mqtt, host=host, port=port))
+        except ValueError as e:
+            sys.stderr.write(f"{str(e)}\n")
+            sys.exit(-18)
 
         # Aggiunta al dizionario di targhe in esecuzione dell'oggetto:
         #   targa : {
@@ -377,7 +381,11 @@ def main():
     # Utilizzo della lista globale di autobus smart con motorizzazione ibrida
     global hybrid_bus_list
     for i in range(0, hybrid_num):
-        hybrid_bus_list.append(AutobusIbrido(ranges=ranges, timeout=delay_mqtt, host=host, port=port))
+        try:
+            hybrid_bus_list.append(AutobusIbrido(ranges=ranges, timeout=delay_mqtt, host=host, port=port))
+        except ValueError as e:
+            sys.stderr.write(f"{str(e)}\n")
+            sys.exit(-19)
 
         # Aggiunta al dizionario di targhe in esecuzione dell'oggetto:
         #   targa : {
@@ -396,7 +404,11 @@ def main():
     # Utilizzo della lista globale di autobus smart con motorizzazione elettrica
     global electric_bus_list
     for i in range(0, electric_num):
-        electric_bus_list.append(AutobusElettrico(ranges=ranges, timeout=delay_mqtt, host=host, port=port))
+        try:
+            electric_bus_list.append(AutobusElettrico(ranges=ranges, timeout=delay_mqtt, host=host, port=port))
+        except ValueError as e:
+            sys.stderr.write(f"{str(e)}\n")
+            sys.exit(-20)
 
         # Aggiunta al dizionario di targhe in esecuzione dell'oggetto:
         #   targa : {
@@ -700,7 +712,7 @@ def main():
             for j in range(i+1, len(update_fermata_bus_list)):
                 if update_fermata_bus_list[i] != update_fermata_bus_list[j]:
                     sys.stderr.write("Errore! Uno dei contatori delle fermate bus è diverso dagli altri\n")
-                    sys.exit(-26)
+                    sys.exit(-21)
         update_fermata_bus = update_fermata_bus_list[0]
 
         # Aggiornamento al valore restituito dalle funzioni di simulazione metriche

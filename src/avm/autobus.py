@@ -1,5 +1,6 @@
 import json
 import random
+import socket
 import sys
 import time
 from copy import deepcopy
@@ -72,12 +73,23 @@ class Autobus:
         }
         self._formatted_data_to_send = ""
 
+        # Soglie per gestione livello alimentazione
+        self._static_threshold = 0.0
+        self._threshold_list = []
+        self._dynamic_threshold = 0.0
+
         # Client, timeout, host e porta MQTT
         self._mqtt_client = self._setup_mqtt()
         self._timeout = timeout
         self._host = host
         self._port = port
 
+        # Coda di messaggi, prevalentemente predisposta per ritardo nel tempo di setup della connessione al broker MQTT, e
+        # per raccogliere messaggi nell'eventualità di connessione al broker assente
+        self._msg_queue = []
+
+        # Definizione topic MQTT
+        self._topic = "AVM/info"
         # Prefisso del topic a cui inviare gli eventi di allarme
         self._critic_topic_prefix = "AVM/alarm/autobus"
     
@@ -108,6 +120,61 @@ class Autobus:
         mqttc.on_connect_fail = self._on_connect_fail
 
         return mqttc
+
+    # Connessione Broker MQTT - setup della connessione verso il broker MQTT, impostazione di client_id e dell'effettiva 
+    # connessione, con gestione di eventuali errori legati ad indirizzo errato o a broker non disponibile
+    def _connect_to_mqtt_broker(self):
+        mqtt_client = self.get_mqtt_client()
+        host = self.get_host()
+        port = self.get_port()
+        client_id = "autobus_" + self.get_LP()
+
+        # Inizializzazione var per contenere return value della connessione al broker MQTT
+        err = None
+
+        # Impostazione client_id
+        self.set_mqtt_client_id(client_id.encode())
+        try:
+            # Connessione verso il broker MQTT
+            err = mqtt_client.connect(host=host, port=port, keepalive=60)
+        except socket.gaierror:
+            sys.stderr.write("Errore! Impossibile risolvere l'indirizzo fornito\n")
+            sys.exit(-14)
+        except ConnectionRefusedError:
+            sys.stderr.write("Errore! Connessione rifiutata\n")
+            sys.exit(-15)
+        else:
+            # Verifica buon fine connessione
+            if err == MQTTErrorCode.MQTT_ERR_SUCCESS:
+                # Utilizzo del metodo loop_start() che concede di non preoccuparsi di funzionalità utili come la 
+                # riconnessione automatica al broker MQTT. Creazione di un thread separato per effettuare le operazioni
+                # che seguono
+                err_l = mqtt_client.loop_start()
+
+                # Verifica buon fine start background thread
+                if err_l != MQTTErrorCode.MQTT_ERR_SUCCESS:
+                    print("Errore! Mancata esecuzione del background thread per la comunicazione\n")
+                    sys.exit(-16)
+            else:
+                print("Errore! Connessione non avvenuta\n")
+                sys.exit(-17)
+
+    # Inizializzazione soglie livelli alimentazione - prevede l'impostazione di una soglia statica, la creazione di una lista
+    # di soglie con valore minimo e valore massimo da cui prelevare la soglia dinamica, e l'impostazione della soglia 
+    # dinamica prelevata casualmente dalla lista di soglie
+    def _initialize_thresholds(self, list_lower_bound: float, static_threshold: float) -> None:
+        # Impostazione soglia statica
+        self.set_static_threshold(static_threshold)
+
+        # Creazione e impostazione lista soglie
+        threshold_list = [
+            float(value)
+            for value in np.arange(list_lower_bound + 1.0, self.get_static_threshold() + 1.0, 1.0)
+        ]
+        self.set_threshold_list(threshold_list)
+
+        # Impostazione soglia dinamica
+        self.set_dynamic_threshold(random.choice(self.get_threshold_list()))
 
     # Getter 'mqtt_client' parameter
     def get_mqtt_client(self):
@@ -354,6 +421,104 @@ class Autobus:
 
         self._long_direction = long_direction
 
+    # Getter 'threshold_list' parameter
+    def get_threshold_list(self):
+        return deepcopy(self._threshold_list)
+    
+    # Setter 'threshold_list' parameter
+    def set_threshold_list(self, threshold_list: list):
+        if type(threshold_list) is not list:
+            raise TypeError(f"Errore! Il tipo del parametro passato deve essere 'list'. Ricevuto {type(threshold_list)}")
+
+        if min(threshold_list) <= 0.0:
+            raise ValueError("Errore! La lista di soglie non può contenere elementi minori o uguali a zero")
+        
+        self._threshold_list = deepcopy(threshold_list)
+
+        # Modifica della soglia statica di rifornimento per rispettare la modifica sulla lista di soglie, dato che il valore 
+        # massimo della lista è proprio la soglia statica
+        self._static_threshold = threshold_list[-1]
+
+    # Getter 'static_threshold' parameter
+    def get_static_threshold(self):
+        return self._static_threshold
+
+    # Setter 'static_threshold' parameter
+    def set_static_threshold(self, static_threshold: float):
+        if type(static_threshold) is not float:
+            raise TypeError(f"Errore! Il tipo del parametro passato deve essere 'float'. Ricevuto {type(static_threshold)}")
+
+        if static_threshold <= 0.0:
+            raise ValueError("Errore! La soglia statica non può assumere valori minori o uguali a zero")
+        
+        self._static_threshold = static_threshold
+
+        # Modifica della lista da cui generare la soglia dinamica di rifornimento e reimpostazione di questa
+        threshold_list = self.get_threshold_list()
+
+        if len(threshold_list) > 0:
+            # Verifica che la nuova soglia statica sia maggiore dell'ultimo elemento della lista (soglia precedente)
+            if static_threshold > threshold_list[-1]:
+                # In questo caso si genera una nuova lista per estendere la precedente
+                #   [a, b] && c > b --> [a, b, b+1, c]
+                extend_list = []
+                for i in np.arange(threshold_list[-1] + 1, static_threshold + 1, 1.0):
+                    extend_list.append( float(i) )
+                
+                threshold_list.extend(extend_list.copy())
+            # Verifica che la nuova soglia sia al contrario minore dell'ultimo elemento della lista (soglia precedente), 
+            # e un numero non negativo
+            elif static_threshold < threshold_list[-1] and static_threshold >= 0.0:
+                # In questo caso si "taglia" la vecchia lista all'indice dell'elemento già presente al suo interno
+                #   [a, b] && c < b --> [a, c]
+                upper_bound = threshold_list.index(static_threshold)
+                threshold_list = threshold_list[0:upper_bound+1]
+            
+            self.set_threshold_list(threshold_list)
+
+    # Getter 'dynamic_threshold' parameter
+    def get_dynamic_threshold(self):
+        return self._dynamic_threshold
+
+    # Setter 'dynamic_threshold' parameter
+    def set_dynamic_threshold(self, dynamic_threshold: float):
+        if type(dynamic_threshold) is not float:
+            raise TypeError(f"Errore! Il tipo del parametro passato deve essere 'float'. Ricevuto {type(dynamic_threshold)}")
+
+        if dynamic_threshold <= 0.0:
+            raise ValueError("Errore! La soglia dinamica non può assumere valori minori o uguali a zero")
+        
+        self._dynamic_threshold = dynamic_threshold
+
+    # Getter 'topic' parameter
+    def get_topic(self):
+        return self._topic
+
+    # Setter 'topic' parameter
+    def _set_topic(self, topic: str):
+        if type(topic) is not str:
+            raise TypeError(f"Errore! Il tipo del parametro passato deve essere 'str'. Ricevuto {type(topic)}")
+
+        if topic == "":
+            raise ValueError("Errore! Il topic MQTT non può essere vuoto")
+
+        self._topic = topic
+
+    # Getter 'msg_queue' parameter
+    def get_msg_queue(self):
+        return self._msg_queue.copy()
+    
+    # Clear 'msg_queue' parameter
+    def _clear_msg_queue(self):
+        self._msg_queue.clear()
+
+    # Append 'msg_queue' parameter
+    def _append_msg_queue(self, el: tuple):
+        if type(el) is not tuple:
+            raise TypeError(f"Errore! Il tipo del parametro passato deve essere 'tuple'. Ricevuto {type(el)}")
+
+        self._msg_queue.append(el)
+
     # Getter 'data_to_send' parameter
     def get_data_to_send(self):
         return deepcopy(self._data_to_send)
@@ -522,6 +687,32 @@ class Autobus:
 
         return new_status_metric
 
+    # Algoritmo generazione metriche alimentazione - prevede la generazione di metriche del livello di alimentazione dei 
+    # diversi autobus, a seconda della motorizzazione, al fine di simulare i consumi e il rifornimento / ricarica in momenti
+    # differenti, avendo una soglia dinamica che determina questa azione, modificata ad ogni rifornimento / ricarica.
+    # I parametri sono costituiti dalla metrica precedente, la quantità fissata da sottrarre al livello, minimo e massimo
+    # dell'intervallo della metrica, e il numero di cifre da mantenere dopo la virgola
+    def _generate_level_metric(self, past_level: float, level_span: float, lower_level_bound: float, upper_level_bound: float, digit_to_round=2) -> float:
+        fuel_level = 0.0
+                    
+        # Verifica che la quantità di carburante rimasta sia superiore alla soglia dinamica decisa
+        if past_level >= self.get_dynamic_threshold():
+            # Diminuzione quantità predefinita
+            fuel_update = round( past_level - level_span, digit_to_round )
+            # Verifica che la diminuzione non abbia comportato un livello negativo
+            if fuel_update >= lower_level_bound:
+                fuel_level = fuel_update
+            else:
+                fuel_level = lower_level_bound
+        # Se la quantità di carburante rimasta non supera la soglia allora si simula il pieno di carburante riportando
+        # il livello al massimo e si cambia la soglia, in modo da simulare una variabilità del momento in cui il
+        # rifornimento viene effettuato
+        else:
+            fuel_level = upper_level_bound
+            self.set_dynamic_threshold(random.choice(self.get_threshold_list()))
+
+        return fuel_level
+
     # Simulazione Metriche - metodo che permette di generare ed aggiornare le metriche da comprendere successivamente nel
     # "pacchetto" dati da inviare, attraverso il protocollo di comunicazione MQTT, al sistema di Ingestion. L'aggiornamento
     # avviene in maniera elaborata per sembrare maggiormente verosimile
@@ -662,6 +853,75 @@ class Autobus:
             self._formatted_data_to_send = json.dumps(self.get_data_to_send())
         elif data_type.upper() == "BINARY":
             self._formatted_data_to_send = json.dumps(self.get_data_to_send()).encode()
+
+    # Pubblicazione del messaggio e attesa - metodo necessario al fine di raccogliere la funzionalità di pubblicazione del
+    # messaggio e attesa di un timeout. Il messaggio viene pubblicato su un topic a scelta, attraverso il client fornito, 
+    # attendendo uno specifico timeout, anch'esso passato come argomento. Il flag 'queued' permette di distinguere se il
+    # messaggio proviene dalla coda di messaggi impostata oppure no 
+    def _publish_message_and_wait(self, client: mqtt.Client, timeout: float, topic: str, message: str, queued: bool) -> None:
+        # Publish con QoS 1 per assicurare la consegna del messaggio in coda
+        msginfo = client.publish(topic=topic, payload=message, qos=1)
+
+        # Attesa della pubblicazione del messaggio per assicurare una corretta gestione della QoS desiderata.
+        # QoS = 1 indica una qualità del servizio 'at_least_once'
+        before_wait = time.time()
+        msginfo.wait_for_publish(timeout=timeout)
+        after_wait = time.time()
+        if after_wait - before_wait >= timeout:
+            print(f"Uscita da wait_for_publish() --> timeout di {timeout} s scaduto", end="")
+            if queued:
+                print(" (messaggio in coda)")
+            else:
+                print()
+        else:
+            print(f"Uscita da wait_for_publish() con successo della pubblicazione sul broker del messaggio", end="")
+            if queued:
+                print(" in coda")
+            else:
+                print(" corrente")
+
+    # Comunicazione - comunicazione verso il sistema di Ingestion, ovverosia trasmissione del "pacchetto" dati verso 
+    # il broker MQTT, e successiva predisposizione di un bridge per la comunicazione al sistema di Ingestion, ossia
+    # Kafka
+    def communicate(self, alarm=False, topic="AVM/info", message="hello"):
+        mqtt_client = self.get_mqtt_client()
+        mqtt_timeout = self.get_timeout()
+        payload = self.get_formatted_data_to_send()
+        topic_to_publish = self.get_topic()
+        msg_queue = self.get_msg_queue()
+
+        # Verifica messaggio di allarme da comunicare e conseguente assegnazione di messaggio e topic passati come 
+        # argomenti di funzione
+        if alarm:
+            topic_to_publish = topic
+            payload = message
+
+        # Verifica connessione client to broker
+        if mqtt_client.is_connected():
+            # Verifica messaggi in coda. Per ogni messaggio in coda avviene la pubblicazione di quest'ultimo, in
+            # maniera antecedente al messaggio attuale
+            for msg in msg_queue:
+                # Pubblicazione del messaggio in coda e attesa
+                self._publish_message_and_wait(client=mqtt_client, timeout=mqtt_timeout, topic=msg[0], message=msg[1], queued=True)
+
+            # Cancellazione dalla coda di tutti i messaggi precedentemente in attesa
+            self._clear_msg_queue()
+
+            # Pubblicazione del messaggio e attesa
+            self._publish_message_and_wait(client=mqtt_client, timeout=mqtt_timeout, topic=topic_to_publish, message=payload, queued=False)
+        else:
+            # Aggiunta (topic, messaggio) non inviato alla coda di messaggi in attesa
+            self._append_msg_queue(el=(topic_to_publish, payload))
+            print("Connessione assente --> messaggio in coda...")
+        
+        # Rimozione dello stop del loop per due motivi:
+        #   1. Stoppando il loop se la disconnessione al broker avviene nel mentre che il thread del loop non è "vivo"
+        #      allora si verificherà un errore, mentre non stoppando il thread questo è sempre alive, e di conseguenza
+        #      gestisce correttamente la riconnessione
+        #   2. Stoppando il thread porta un notevole overhead sia nello stop che nella ricreazione di quest'ultimo, per
+        #      cui questo si traduce in un notevole ritardo da parte degli oggetti autobus che devono aspettare che il 
+        #      thread venga stoppato e ricreato (circa 2.5 / 3 secondi)
+        # mqtt_client.loop_stop()
 
     # Stampa a Video - stampa a video delle metriche simulate da parte dell'oggetto Autobus
     def show(self):
