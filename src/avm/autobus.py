@@ -139,10 +139,10 @@ class Autobus:
             err = mqtt_client.connect(host=host, port=port, keepalive=60)
         except socket.gaierror:
             sys.stderr.write("Errore! Impossibile risolvere l'indirizzo fornito\n")
-            sys.exit(-14)
+            sys.exit(-8)
         except ConnectionRefusedError:
             sys.stderr.write("Errore! Connessione rifiutata\n")
-            sys.exit(-15)
+            sys.exit(-9)
         else:
             # Verifica buon fine connessione
             if err == MQTTErrorCode.MQTT_ERR_SUCCESS:
@@ -154,10 +154,10 @@ class Autobus:
                 # Verifica buon fine start background thread
                 if err_l != MQTTErrorCode.MQTT_ERR_SUCCESS:
                     print("Errore! Mancata esecuzione del background thread per la comunicazione\n")
-                    sys.exit(-16)
+                    sys.exit(-10)
             else:
                 print("Errore! Connessione non avvenuta\n")
-                sys.exit(-17)
+                sys.exit(-11)
 
     # Inizializzazione soglie livelli alimentazione - prevede l'impostazione di una soglia statica, la creazione di una lista
     # di soglie con valore minimo e valore massimo da cui prelevare la soglia dinamica, e l'impostazione della soglia 
