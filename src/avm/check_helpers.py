@@ -54,7 +54,10 @@ def check_mqtt_port(port: int, input_check: bool) -> int:
     return mqtt_port
 
 
-# 
+# Check brokers Kafka - funzione utile alla verifica della coerenza dei brokers Kafka passati da linea di comando. La 
+# verifica prevede la rimozione di eventuali spazi vuoti presenti nella stringa di connessione, il controllo della presenza
+# del carattere ':' a indicare la separazione tra host e porta, successivamnte viene verificato che l'host non sia vuoto, e
+# inoltre che la porta sia di tipo intero e che ricada nell'insieme di porte che rappresentano i nodi del cluster
 def check_brokers(brokers: list[str]) -> list[str]:
     if type(brokers) is not list:
         raise TypeError(f"Errore! Il tipo del parametro 'brokers' passato deve essere 'list'. Ricevuto {type(brokers)}")
