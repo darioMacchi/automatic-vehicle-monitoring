@@ -7,11 +7,15 @@ import uuid
 
 import paho.mqtt.client as mqtt
 import paho.mqtt.reasoncodes as mqttrc
-from kafka import KafkaProducer
-from kafka.admin import KafkaAdminClient, NewTopic
 from kafka.errors import (KafkaError, KafkaTimeoutError, NoBrokersAvailable,
                           TopicAlreadyExistsError)
 from paho.mqtt.enums import MQTTErrorCode
+
+from avm.check_helpers import check_brokers, check_mqtt_host, check_mqtt_port
+from avm.kafka_helpers import (_close_kafka_admin, _close_kafka_producer,
+                               _close_kafka_producer_without_flush,
+                               _create_kafka_admin, _create_kafka_producer,
+                               _ensure_topics)
 
 
 # Oggetto Bridge MQTT to Kafka
@@ -90,6 +94,7 @@ class BridgeMQTTKafka:
     # creazione dell'admin Kafka specificando bootstrap servers a cui deve avvenire la connessione e client_id
     def _setup_kafka(self):
         bootstrap_servers = self.get_brokers_kafka()
+        close_timeout = 5
 
         # Preparazione client_id per producer e admin Kafka
         #   utilizzo di PID + primi 8 caratteri esadecimali di UUID v4
@@ -101,23 +106,23 @@ class BridgeMQTTKafka:
         producer_client_id = f"AVM_telemetry_producer-{pid}-{short_uuid}"
         admin_client_id = f"AVM_telemetry_bridge_admin-{pid}-{short_uuid}"
 
-        # Gestione errore di connessione a broker non disponibili alla connessione
+        # Setup Kafka producer
+        kafka_producer = _create_kafka_producer(brokers=bootstrap_servers, client_id=producer_client_id)
+
+        # Setup Kafka admin
         try:
-            # Instanziazione Kafka producer con bootstrap servers a cui deve avvenire la connessione, client_id, e
-            # numero massimo di richieste "pipelined" verso i Kafka broker
-
-            # Setup Kafka producer
-            kafka_prod = KafkaProducer(bootstrap_servers=bootstrap_servers, client_id=producer_client_id, max_in_flight_requests_per_connection=1, allow_auto_create_topics=False)
-
-            # Instanziazione Kafka admin con bootstrap servers a cui deve avvenire la connessione, e client_id
-
-            # Setup Kafka admin
-            kafka_admin = KafkaAdminClient(bootstrap_servers=bootstrap_servers, client_id=admin_client_id)
-        except NoBrokersAvailable:
-            sys.stderr.write("Errore! Nessun broker Kafka disponibile per la connessione\n")
-            sys.exit(-12)
+            kafka_admin = _create_kafka_admin(brokers=bootstrap_servers, client_id=admin_client_id)
+        except Exception as error:
+            # In caso di errore durante la creazione dell'admin Kafka si predispone la chiusura del producer Kafka creato
+            # precedentemente
+            try:
+                _close_kafka_producer_without_flush(producer=kafka_producer, close_timeout=close_timeout)
+            except Exception as close_error:
+                raise Exception(f"Errore! Chiusura parziale producer fallita: {close_error}") from error
+            
+            raise
         else:
-            return kafka_prod, kafka_admin
+            return kafka_producer, kafka_admin
 
     # Getter 'host_mqtt' parameter
     def get_host_mqtt(self):
@@ -161,46 +166,63 @@ class BridgeMQTTKafka:
     def loop_forever(self):
         self.get_mqtt_client().loop_forever()
 
-    # Metodo dedito alla creazione dei topic con i parametri di configurazione desiderati, ossia per fare in modo che
-    # il topic sia gestito tra più broker Kafka, con un certo grado di partizione, replica e repliche in-sync (ISR).
-    # Verifica se il topic è già presente nel cluster, altrimenti si incarica della creazione
-    def _create_topic_if_not_exist(self, topic: str, partitions=1, replication=1, min_insync_replicas=1):
-        admin = self.get_kafka_admin()
+    # Forward message method - metodo necessario all'inoltro dei messaggi verso il sistema di Ingestion Kafka, viene previsto
+    # un dizionario utile al mantenimento degli ultimi 'userdata_dimension' messaggi entrati nel bridge, in modo che 
+    # nell'eventualità di messaggi duplicati sia possibile distinguere tra messaggio duplicato ma già processato e messaggio
+    # duplicato ma ancora non processato, di conseguenza il metodo si occupa dell'aggiornamento di quest'ultimo.
+    # Successivamente avviene l'effettivo invio del messaggio al sistema di Ingestion Kafka e l'attesa del risultato 
+    # dell'operazione di invio
+    def _forward_message(self, mqtt_userdata: dict, userdata_dimension: int, message: mqtt.MQTTMessage, message_payload: dict, fwd_topic: str, fwd_processing_topic: str, dup_flag: bool, result_timeout=60):
+        # Verifica lunghezza dizionario
+        if len(mqtt_userdata) < userdata_dimension:
+            # Se al di sotto di 'userdata_dimension' allora aggiunta del messaggio
+            mqtt_userdata[message.mid] = message_payload["timestamp"]
+        else:
+            # Se uguale o al di sopra di 'userdata_dimension' allora rimozione dei valori più vecchi dal dizionario e
+            # aggiunta del nuovo elemento
+            earliest = min(mqtt_userdata.values())
+            earliest_keys = [k for k, val in mqtt_userdata.items() if val == earliest]
+            for k in earliest_keys:
+                mqtt_userdata.pop(k)
+
+            mqtt_userdata[message.mid] = message_payload["timestamp"]
+        
+        print(f"{message.topic} {str(message_payload)} ", end="")
+        if dup_flag:
+            print("duplicato")
+        else:
+            print("originale")
+
+        # Invio del messaggio verso il broker Kafka con inclusione degli header per indicare l'encoding del
+        # contenuto
+        future_telemetry = self.get_kafka_client().send(topic=fwd_topic, value=message.payload, headers=[("content-encoding", b"JSON")])
+        # Verifica della ricezione di un messaggio da uno dei topic di allarme, in questo caso il messaggio non deve
+        # essere processato, ma solamente memorizzato
+        if "alarm" not in fwd_topic:
+            # Invio del messaggio verso il broker Kafka al topic dedito al processing della telemetria ricevuta
+            future_processing = self.get_kafka_client().send(topic=fwd_processing_topic, value=message.payload, headers=[("content-encoding", b"JSON")])
 
         try:
-            # Acquisizione topic presenti nel cluster
-            topics_already_created = admin.list_topics()
+            # Attesa dell'effettivo invio del messaggio
+            result_telemetry = future_telemetry.get(timeout=result_timeout)
+            # Verifica della ricezione di un messaggio da uno dei topic di allarme, in questo caso il messaggio non
+            # deve essere processato, ma solamente memorizzato
+            if "alarm" not in fwd_topic:
+                # Attesa dell'effettivo invio del messaggio
+                result_processing = future_processing.get(timeout=result_timeout)
+        except KafkaTimeoutError:
+            sys.stderr.write("\nErrore! Fallita attesa dell'effettivo invio del messaggio, timeout scaduto\n")
         except KafkaError:
-            sys.stderr.write("Errore! Impossibile ottenere il listato dei topic presenti nel cluster\n")
-            sys.exit(-13)
-
-        # Verifica topic assente all'interno del cluster
-        if topic not in topics_already_created:
-            # Creazione topic attraverso l'oggetto NewTopic specificando:
-            #   name: nome del topic
-            #   num_partitions: numero di partizioni assegnate al topic
-            #   replication_factor: grado di replicazione del topic, ossia su quanti broker deve essere replicato
-            #   topic_configs: specifica del numero minimo di repliche che deve essere in-sync, ossia allineate
-            #                  con il leader rispetto alle partizioni del topic
-            topic_to_create = NewTopic(
-                name=topic,
-                num_partitions=partitions,
-                replication_factor=replication,
-                topic_configs={
-                    "min.insync.replicas":str(min_insync_replicas)
-                }
-            )
-
-            try:
-                # Creazione del topic all'interno del cluster
-                admin.create_topics(new_topics=[topic_to_create])
-                print(f"\nTopic '{topic}' creato\n")
-            except TopicAlreadyExistsError:
-                sys.stderr.write("Errore! Impossibile creare un topic che esiste già nel cluster\n")
-                sys.exit(-14)
-            except KafkaError:
-                sys.stderr.write("Errore!\n")
-                sys.exit(-15)
+            sys.stderr.write("\nErrore! Fallita attesa dell'effettivo invio del messaggio\n")
+        else:
+            print(f"\nMessaggio inoltrato dal topic MQTT {message.topic} al topic Kafka {fwd_topic}, con offset {result_telemetry.offset}")
+            # Verifica della ricezione di un messaggio da uno dei topic di allarme, in questo caso il messaggio non
+            # deve essere processato, ma solamente memorizzato, per cui la stampa che riguarda il topic di
+            # processamento non ha alcun senso
+            if "alarm" not in fwd_topic:
+                print(f"Messaggio inoltrato dal topic MQTT {message.topic} al topic Kafka {fwd_processing_topic}, con offset {result_processing.offset}\n")
+            else:
+                print()
 
     # on_subscribe - callback necessaria per il protocollo di comunicazione MQTT per gestire il momento in cui
     # il client riceve una risposta SUBACK dal broker
@@ -253,6 +275,8 @@ class BridgeMQTTKafka:
     def _on_message(self, client: mqtt.Client, userdata: dict, msg: mqtt.MQTTMessage):
         # Conversione MQTT topic a Kafka topic (rimpiazzo / con .)
         kafka_topic = msg.topic.replace("/", ".")
+        # Set up topic dedito all'inoltro dei messaggi verso il nodo di Processing
+        flink_kafka_topic = ""
 
         # Verifica della ricezione di un messaggio da uno dei topic di allarme, in questo caso il messaggio non deve essere
         # processato, ma solamente memorizzato
@@ -271,13 +295,13 @@ class BridgeMQTTKafka:
         last = 120
 
         # Creazione del topic di telemetria nel cluster Kafka con i parametri di config appropriati
-        self._create_topic_if_not_exist(topic=kafka_topic, partitions=self.get_partitions(), replication=self.get_replication(), min_insync_replicas=self.get_min_insync_replicas())
+        _ensure_topics(admin=self.get_kafka_admin(), topics=[kafka_topic], replication=self.get_replication(), partitions=self.get_partitions(), min_insync_replicas=self.get_min_insync_replicas())
 
         # Verifica della ricezione di un messaggio da uno dei topic di allarme, in questo caso il messaggio non deve essere
         # processato, ma solamente memorizzato
         if "alarm" not in kafka_topic:
             # Creazione del topic di processing nel cluster Kafka con i parametri di config di appropriati (partitions a default)
-            self._create_topic_if_not_exist(topic=flink_kafka_topic, replication=self.get_replication(), min_insync_replicas=self.get_min_insync_replicas())
+            _ensure_topics(admin=self.get_kafka_admin(), topics=[flink_kafka_topic], replication=self.get_replication(), min_insync_replicas=self.get_min_insync_replicas())
 
         # Verifica messaggio duplicato
         if msg.dup:
@@ -286,52 +310,8 @@ class BridgeMQTTKafka:
             # Se il messaggio duplicato non è presente nel dizionario degli ultimi 'last' messaggi, allora non è stato
             # elaborato
             if userdata.get(msg.mid) == None:
-                # Verifica lunghezza dizionario
-                if len(userdata) < last:
-                    # Se al di sotto di 'last' allora aggiunta del messaggio
-                    userdata[msg.mid] = payload["timestamp"]
-                else:
-                    # Se uguale o al di sopra di 'last' allora rimozione dei valori più vecchi dal dizionario e aggiunta 
-                    # del nuovo elemento
-                    earliest = min(userdata.values())
-                    earliest_keys = [k for k, val in userdata.items() if val == earliest]
-                    for k in earliest_keys:
-                        userdata.pop(k)
-
-                    userdata[msg.mid] = payload["timestamp"]
-                
-                print(f"{msg.topic} {str(payload)} duplicato")
-
-                # Invio del messaggio verso il broker Kafka con inclusione degli header per indicare l'encoding del
-                # contenuto
-                future_telemetry = self.get_kafka_client().send(topic=kafka_topic, value=msg.payload, headers=[("content-encoding", b"JSON")])
-                # Verifica della ricezione di un messaggio da uno dei topic di allarme, in questo caso il messaggio non deve
-                # essere processato, ma solamente memorizzato
-                if "alarm" not in kafka_topic:
-                    # Invio del messaggio verso il broker Kafka al topic dedito al processing della telemetria ricevuta
-                    future_processing = self.get_kafka_client().send(topic=flink_kafka_topic, value=msg.payload, headers=[("content-encoding", b"JSON")])
-
-                try:
-                    # Attesa dell'effettivo invio del messaggio
-                    result_telemetry = future_telemetry.get(timeout=60)
-                    # Verifica della ricezione di un messaggio da uno dei topic di allarme, in questo caso il messaggio non
-                    # deve essere processato, ma solamente memorizzato
-                    if "alarm" not in kafka_topic:
-                        # Attesa dell'effettivo invio del messaggio
-                        result_processing = future_processing.get(timeout=60)
-                except KafkaTimeoutError:
-                    sys.stderr.write("\nErrore! Fallita attesa dell'effettivo invio del messaggio, timeout scaduto\n")
-                except KafkaError:
-                    sys.stderr.write("\nErrore! Fallita attesa dell'effettivo invio del messaggio\n")
-                else:
-                    print(f"\nMessaggio inoltrato dal topic MQTT {msg.topic} al topic Kafka {kafka_topic}, con offset {result_telemetry.offset}")
-                    # Verifica della ricezione di un messaggio da uno dei topic di allarme, in questo caso il messaggio non
-                    # deve essere processato, ma solamente memorizzato, per cui la stampa che riguarda il topic di
-                    # processamento non ha alcun senso
-                    if "alarm" not in kafka_topic:
-                        print(f"Messaggio inoltrato dal topic MQTT {msg.topic} al topic Kafka {flink_kafka_topic}, con offset {result_processing.offset}\n")
-                    else:
-                        print()
+                # Inoltro del messaggio al sistema di Ingestion e aggiornamento del dizionario degli utlimi 'last' messaggi
+                self._forward_message(mqtt_userdata=userdata, userdata_dimension=last, message=msg, message_payload=payload, fwd_topic=kafka_topic, fwd_processing_topic=flink_kafka_topic, dup_flag=msg.dup)
             else:
                 # Il messaggio duplicato è presente nel dizionario degli ultimi 'last' messaggi, quindi è già stato
                 # elaborato
@@ -345,79 +325,48 @@ class BridgeMQTTKafka:
                     print()
         # Messaggio originale
         else:
-            # Verifica lunghezza dizionario
-            if len(userdata) < last:
-                # Se al di sotto di 'last' allora aggiunta del messaggio
-                userdata[msg.mid] = payload["timestamp"]
-            else:
-                # Se uguale o al di sopra di 'last' allora rimozione dei valori più vecchi dal dizionario e aggiunta del
-                # nuovo elemento
-                earliest = min(userdata.values())
-                earliest_keys = [k for k, val in userdata.items() if val == earliest]
-                for k in earliest_keys:
-                    userdata.pop(k)
-
-                userdata[msg.mid] = payload["timestamp"]
-            
-            print(f"{msg.topic} {str(payload)} originale")
-
-            # Invio del messaggio verso il broker Kafka con inclusione degli header per indicare l'encoding del
-            # contenuto
-            future_telemetry = self.get_kafka_client().send(topic=kafka_topic, value=msg.payload, headers=[("content-encoding", b"JSON")])
-            # Verifica della ricezione di un messaggio da uno dei topic di allarme, in questo caso il messaggio non
-            # deve essere processato, ma solamente memorizzato
-            if "alarm" not in kafka_topic:
-                # Invio del messaggio verso il broker Kafka al topic dedito al processing della telemetria ricevuta
-                future_processing = self.get_kafka_client().send(topic=flink_kafka_topic, value=msg.payload, headers=[("content-encoding", b"JSON")])
-
-            try:
-                # Attesa dell'effettivo invio del messaggio
-                result_telemetry = future_telemetry.get(timeout=60)
-                # Verifica della ricezione di un messaggio da uno dei topic di allarme, in questo caso il messaggio non
-                # deve essere processato, ma solamente memorizzato
-                if "alarm" not in kafka_topic:
-                    # Attesa dell'effettivo invio del messaggio
-                    result_processing = future_processing.get(timeout=60)
-            except KafkaTimeoutError:
-                    sys.stderr.write("\nErrore! Fallita attesa dell'effettivo invio del messaggio, timeout scaduto\n")
-            except KafkaError:
-                sys.stderr.write("\nErrore! Fallita attesa dell'effettivo invio del messaggio\n")
-            else:
-                print(f"\nMessaggio inoltrato dal topic MQTT {msg.topic} al topic Kafka {kafka_topic}, con offset {result_telemetry.offset}")
-                # Verifica della ricezione di un messaggio da uno dei topic di allarme, in questo caso il messaggio non
-                # deve essere processato, ma solamente memorizzato, per cui la stampa che riguarda il topic di
-                # processamento non ha alcun senso
-                if "alarm" not in kafka_topic:
-                    print(f"Messaggio inoltrato dal topic MQTT {msg.topic} al topic Kafka {flink_kafka_topic}, con offset {result_processing.offset}\n")
-                else:
-                    print()
+            # Inoltro del messaggio al sistema di Ingestion e aggiornamento del dizionario degli utlimi 'last' messaggi
+            self._forward_message(mqtt_userdata=userdata, userdata_dimension=last, message=msg, message_payload=payload, fwd_topic=kafka_topic, fwd_processing_topic=flink_kafka_topic, dup_flag=msg.dup)
 
     # Stop method - prevede lo stop del bridge a seguito della ricezione di un segnale SIGINT (CTRL+C), per una 
     # graceful disconnection viene eseguito il metodo disconnect(.) per la disconnessione dal broker MQTT, la chiusura
-    # del producer e dell'admin Kafka con il metodo close(.), inoltre viene stampato a video un messaggio di informazione
+    # del producer e dell'admin Kafka, inoltre viene stampato a video un messaggio di informazione
     def stop_bridge(self):
         close_timeout = 5
         flush_timeout = 2.5
 
         # Disconnessione dal broker MQTT
-        err = self.get_mqtt_client().disconnect()
-        # Chiusura producer Kafka
+        mqtt_error = self.get_mqtt_client().disconnect()
+
+        producer_error = None
+        admin_error = None
+
+        # Chiusura producer e admin Kafka
         try:
-            self.get_kafka_client().flush(timeout=flush_timeout)
-        except Exception:
-            print("Errore! Flush fallito")
+            _close_kafka_producer(producer=self.get_kafka_client(), flush_timeout=flush_timeout, close_timeout=close_timeout)
+        except KafkaTimeoutError as error:
+            producer_error = error
+            sys.stderr.write(f"{error}\n")
         finally:
             try:
-                self.get_kafka_client().close(timeout=close_timeout)
+                _close_kafka_admin(admin=self.get_kafka_admin())
+            except KafkaError as error:
+                admin_error = error
+                sys.stderr.write(f"{error}\n")
 
-                # Chiusura admin Kafka
-                self.get_kafka_admin().close()
-            except Exception:
-                print(f"\nCessazione connessione al broker Kafka fallita, e connessione al broker MQTT cessata con ", end="")
-                print("successo\n" if err == MQTTErrorCode.MQTT_ERR_SUCCESS else "insuccesso\n")
-            else:
-                print(f"\nConnessione al broker Kafka interrotta, e connessione al broker MQTT cessata con ", end="")
-                print("successo\n" if err == MQTTErrorCode.MQTT_ERR_SUCCESS else "insuccesso\n")
+        # Predisposizione variabili necessarie a determinare il successo o meno delle operazioni di disconnessione
+        mqtt_success = mqtt_error == MQTTErrorCode.MQTT_ERR_SUCCESS
+        kafka_success = producer_error is None and admin_error is None
+
+        # Definizione e stampa messaggio di uscita
+        if mqtt_success and kafka_success:
+            print("\nConnessione al broker Kafka interrotta, e connessione al broker MQTT cessata con successo\n")
+        elif mqtt_success:
+            print("\nCessazione connessione al broker Kafka fallita, e connessione al broker MQTT cessata con successo\n")
+        elif kafka_success:
+            print("\nConnessione al broker Kafka interrotta, e connessione al broker MQTT cessata senza successo\n")
+        else:
+            print("\nCessazione connessioni al broker Kafka e al broker MQTT fallite entrambi\n")
 
 
 # Check CMD Line Arguments - verifica dei parametri passati da linea di comando, in particolare relativi a host e porta
@@ -435,65 +384,22 @@ def check_cmd_line_args(host_mqtt: str, port_mqtt: str, brokers_kafka: list[str]
     
     if type(brokers_kafka) is not list:
         raise TypeError(f"Errore! Il tipo del parametro 'brokers_kafka' passato deve essere 'list'. Ricevuto {type(brokers_kafka)}")
-    
-    # Inizializzazione parametri di ritorno
-    mqtt_host = ""
-    mqtt_port = 0
 
+    input_check = True
+
+    # Inizializzazione parametri di ritorno
+    mqtt_host = host_mqtt
+    mqtt_port = 0
     kafka_brokers = []
 
     # Host MQTT
-    # Check stringa non vuota
-    mqtt_host = host_mqtt
-    if mqtt_host == "":
-        sys.stderr.write("Errore! L'argomento $host_mqtt deve essere un indirizzo non nullo\n")
-        sys.exit(-2)
+    check_mqtt_host(host=mqtt_host, input_check=input_check)
 
     # Port MQTT
-    # Check numero valido
-    try:
-        mqtt_port = int(port_mqtt)
-    except ValueError:
-        sys.stderr.write("Errore! L'argomento $porta_mqtt passato da linea di comando non è un numero valido\n")
-        sys.exit(-3)
-
-    # Check porta
-    if mqtt_port != 1883 and mqtt_port != 8883:
-        sys.stderr.write("Errore! L'argomento $porta_mqtt deve essere una porta MQTT valida: 1883 oppure 8883 (connessioni SSL)\n")
-        sys.exit(-4)
+    mqtt_port = check_mqtt_port(port=port_mqtt, input_check=input_check)
 
     # Brokers Kafka
-    for broker in brokers_kafka:
-        # Rimozione eventuali blank spaces
-        broker = broker.replace(" ", "")
-
-        try:
-            # Controllo formato stringa broker strettamente del tipo 'host:porta'
-            host, port = broker.split(":")
-        except Exception:
-            sys.stderr.write("Errore! Gli argomenti $host_kafka-* e $port_kafka-* passati da linea di comando devono essere nel formato '$host_kafka-*:port_kafka-*'\n")
-            sys.exit(-5)
-
-        # Host Kafka
-        # Check stringa non vuota
-        if host == "":
-            sys.stderr.write("Errore! L'argomento $host_kafka-* deve essere un indirizzo non nullo\n")
-            sys.exit(-6)
-
-        # Port Kafka
-        # Check numero valido
-        try:
-            port = int(port)
-        except ValueError:
-            sys.stderr.write("Errore! L'argomento $porta_kafka-* passato da linea di comando non è un numero valido\n")
-            sys.exit(-7)
-
-        # Check porta
-        if port != 9092 and port != 9094 and port != 9096:
-            sys.stderr.write("Errore! L'argomento $porta_kafka-* deve essere una porta Kafka valida: 9092 | 9094 | 9096\n")
-            sys.exit(-8)
-        
-        kafka_brokers.append(broker)
+    kafka_brokers = check_brokers(brokers=brokers_kafka)
 
     return mqtt_host, mqtt_port, kafka_brokers
 
@@ -514,16 +420,46 @@ def main():
     signal.signal(signalnum=signal.SIGINT, handler=signal_handler)
 
     # Verifica validità indirizzo broker MQTT e indirizzo broker Kafka
-    host_mqtt, port_mqtt, brokers_kafka_list = check_cmd_line_args(host_mqtt=sys.argv[1], port_mqtt=sys.argv[2], brokers_kafka=sys.argv[3:].copy())
-
+    try:
+        host_mqtt, port_mqtt, brokers_kafka_list = check_cmd_line_args(host_mqtt=sys.argv[1], port_mqtt=sys.argv[2], brokers_kafka=sys.argv[3:].copy())
+    except TypeError as error:
+        sys.stderr.write(f"{error}\n")
+        sys.exit(-2)
+    except ValueError as error:
+        sys.stderr.write(f"{error}\n")
+        sys.exit(-3)
+    except SyntaxError as error:
+        sys.stderr.write(f"{error}\n")
+        sys.exit(-4)
+    
     # Utilizzo dell'oggetto globale di bridging MQTT to Kafka
     global bridge_mqtt_to_kafka
 
     # Instanziazione dell'oggetto Bridge MQTT to Kafka
-    bridge_mqtt_to_kafka = BridgeMQTTKafka(host_mqtt=host_mqtt, port_mqtt=port_mqtt, brokers_kafka=brokers_kafka_list)
+    try:
+        bridge_mqtt_to_kafka = BridgeMQTTKafka(host_mqtt=host_mqtt, port_mqtt=port_mqtt, brokers_kafka=brokers_kafka_list)
+    except NoBrokersAvailable as error:
+        sys.stderr.write(f"{error}\n")
+        sys.exit(-5)
+    except ValueError as error:
+        sys.stderr.write(f"{error}\n")
+        sys.exit(-6)
+    except KafkaError as error:
+        sys.stderr.write(f"{error}\n")
+        sys.exit(-7)
+    except Exception as error:
+        sys.stderr.write(f"{error}\n")
+        sys.exit(-8)
 
     # Messa in esecuzione del bridge
-    bridge_mqtt_to_kafka.loop_forever()
+    try:
+        bridge_mqtt_to_kafka.loop_forever()
+    except TopicAlreadyExistsError as error:
+        sys.stderr.write(f"{error}\n")
+        sys.exit(-9)
+    except KafkaError as error:
+        sys.stderr.write(f"{error}\n")
+        sys.exit(-10)
 
 
 if __name__ == "__main__":
