@@ -55,71 +55,92 @@ def _create_kafka_admin(brokers: list[str], client_id: str) -> KafkaAdminClient:
 # Ensure topics - funzione dedita alla creazione dei topic con i parametri di configurazione desiderati, per fare in modo che
 # il topic sia gestito tra più broker Kafka, con un certo grado di partizione, replica e repliche in-sync (ISR). Verifica la
 # presenza del topic nel cluster, in caso negativo la funzione si incarica della creazione
-def _ensure_topics(admin: KafkaAdminClient, topics: list[str], replication: int = 1, partitions: int = 1, min_insync_replicas: int = 1) -> None:
-    try:
-        # Acquisizione topic presenti nel cluster
-        existing_topics = admin.list_topics()
-    except KafkaError as error:
-        raise KafkaError("Errore! Impossibile ottenere il listato dei topic presenti nel cluster") from error
+def _ensure_topics(admin: KafkaAdminClient, topics: list[str], replication: int = 1, partitions: int = 1, min_insync_replicas: int = 1, max_attempts: int = 5) -> None:
+    if max_attempts < 1:
+        raise ValueError("Errore! Il parametro 'max_attempts' deve essere almeno 1")
+    
+    pending_topics = set(topics)
 
-    # Per ogni topic presente all'interno della lista di topic da creare passata alla funzione, se non è già presente
-    # nel cluster, avviene la creazione
-    topics_to_create = [
-        # Creazione topic attraverso l'oggetto NewTopic specificando:
-        #   name: nome del topic
-        #   num_partitions: numero di partizioni assegnate al topic
-        #   replication_factor: grado di replicazione del topic, ossia su quanti broker deve essere replicato
-        #   topic_configs: specifica del numero minimo di repliche che deve essere in-sync, ossia allineate
-        #                  con il leader rispetto alle partizioni del topic
-        NewTopic(
-            name=topic,
-            num_partitions=partitions,
-            replication_factor=replication,
-            topic_configs={
-                "min.insync.replicas":str(min_insync_replicas)
-            }
-        )
-        for topic in topics
-        if topic not in existing_topics
-    ]
+    # Tentativi di creazione per un massimo di 'max_attempts' tentativi
+    for attempt in range(max_attempts):
+        try:
+            # Acquisizione topic presenti nel cluster
+            existing_topics = admin.list_topics()
+        except KafkaError as error:
+            raise KafkaError("Errore! Impossibile ottenere il listato dei topic presenti nel cluster") from error
 
-    # Verifica del contenuto della lista 'topics_to_create' al fine di evitare le operazioni successive nel momento in cui
-    # la lista non dovesse contenere nulla al suo interno
-    if not topics_to_create:
-        return
+        # Differenza insiemistica tra insieme e lista al fine di evitare la chiamata a 'create_topics' per topic già
+        # presenti nel cluster
+        pending_topics.difference_update(existing_topics)
 
-    try:
-        # Creazione dei topic all'interno del cluster
-        admin.create_topics(new_topics=topics_to_create)
-    except TopicAlreadyExistsError as error:
-        # La cattura dell'eccezione TopicAlreadyExistsError è necessaria per intercettare una possibile race condition, 
-        # quest'ultima può avvenire nel momento in cui un processo A ottiene il listato dei topic, almeno uno dei topic
-        # contenuti nella lista 'topics' è mancante nel cluster, per cui è necessaria la creazione di questo. Prima che 
-        # avvenga la creazione viene deschedulato A e viene assegnata la CPU al processo B, che esegue la funzione con
-        # gli stessi parametri, crea lo stesso topic che doveva essere creato da A e termina, a quel punto viene 
-        # nuovamente schedulato A che cerca di creare il topic già presente nel cluster, a seguito però della creazione da
-        # parte di B. L'operazione fallisce sollevando l'eccezione TopicAlreadyExistsError
+        # Verifica del contenuto dell'insieme 'pending_topics' al fine di evitare le operazioni successive nel momento in cui
+        # l'insieme non dovesse contenere nulla al suo interno
+        if not pending_topics:
+            return
 
-        # Formazione lista di topic non ancora creati a seguito dell'avvenimento di una race condition
-        current_topics = admin.list_topics()
-        still_missing = [topic.name for topic in topics_to_create if topic.name not in current_topics]
+        # Per ogni topic presente all'interno della lista di topic da creare passata alla funzione, se non è già presente
+        # nel cluster, avviene la creazione
+        topics_to_create = [
+            # Creazione topic attraverso l'oggetto NewTopic specificando:
+            #   name: nome del topic
+            #   num_partitions: numero di partizioni assegnate al topic
+            #   replication_factor: grado di replicazione del topic, ossia su quanti broker deve essere replicato
+            #   topic_configs: specifica del numero minimo di repliche che deve essere in-sync, ossia allineate
+            #                  con il leader rispetto alle partizioni del topic
+            NewTopic(
+                name=topic,
+                num_partitions=partitions,
+                replication_factor=replication,
+                topic_configs={
+                    "min.insync.replicas":str(min_insync_replicas)
+                }
+            )
+            for topic in pending_topics
+        ]
 
-        # Verifica del contenuto della lista 'still_missing' al fine di sollevare un'eccezione segnalando che qualcosa è
-        # andato storto nel momento in cui la lista dovesse contenere elementi al suo interno
-        if still_missing:
-            raise RuntimeError("Errore! Topic ancora mancanti nel cluster in seguito a una race condition") from error
+        try:
+            # Creazione dei topic all'interno del cluster
+            admin.create_topics(new_topics=topics_to_create)
+        except TopicAlreadyExistsError as error:
+            # La cattura dell'eccezione TopicAlreadyExistsError è necessaria per intercettare una possibile race condition, 
+            # quest'ultima può avvenire nel momento in cui un processo A ottiene il listato dei topic, almeno uno dei topic
+            # contenuti nella lista 'topics' è mancante nel cluster, per cui è necessaria la creazione di questo. Prima che 
+            # avvenga la creazione viene deschedulato A e viene assegnata la CPU al processo B, che esegue la funzione con
+            # gli stessi parametri, crea lo stesso topic che doveva essere creato da A e termina, a quel punto viene 
+            # nuovamente schedulato A che cerca di creare il topic già presente nel cluster, a seguito però della creazione da
+            # parte di B. L'operazione fallisce sollevando l'eccezione TopicAlreadyExistsError
 
-        for topic in topics:
-            if topic in current_topics:
-                print(f"Topic '{topic}' già presente nel cluster")
-        print()
-    except KafkaError as error:
-        raise KafkaError("Errore! Creazione dei topic Kafka fallita") from error
-    else:
-        # Scorrimento lista topic da creare per verificare quali topic sono stati creati tra i prestabiliti
-        for topic in topics_to_create:
-            print(f"Topic '{topic.name}' creato")
-        print()
+            # Verifica avvenimento eccezione durante l'ultimo tentativo
+            if attempt == max_attempts - 1:
+                # Formazione lista di topic non ancora creati a seguito dell'avvenimento di una race condition
+                try:
+                    current_topics = admin.list_topics()
+                except KafkaError as list_error:
+                    raise KafkaError("Errore! Impossibile verificare i topic dopo TopicAlreadyExistsError") from list_error
+
+                # Aggiornamento insieme di topic pendenti al fine di verificare la permanenza di topic, che significherebbe
+                # errore durante la creazione di almeno uno di essi
+                pending_topics.difference_update(current_topics)
+
+                # Verifica del contenuto dell'insieme 'pending_topics' al fine di sollevare un'eccezione segnalando che
+                # qualcosa è andato storto nel momento in cui l'insieme dovesse contenere elementi al suo interno
+                if pending_topics:
+                    raise RuntimeError("Errore! Topic ancora mancanti nel cluster dopo i tentativi di recupero dalla race condition") from error
+
+                return
+
+            # In caso di avvenimento dell'eccezione durante un tentativo che non sia l'ultimo allora viene effettuato
+            # un nuovo tentativo
+            continue
+        except KafkaError as error:
+            raise KafkaError("Errore! Creazione dei topic Kafka fallita") from error
+        else:
+            # Scorrimento lista topic da creare per verificare quali topic sono stati creati tra i prestabiliti
+            for topic in topics_to_create:
+                print(f"Topic '{topic.name}' creato")
+            print()
+
+            return
 
 
 # Chiusura Producer Kafka - funzione utile alla chiusura di un oggetto KafkaProducer, attraverso l'esecuzione di un flush
