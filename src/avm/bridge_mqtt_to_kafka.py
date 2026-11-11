@@ -7,8 +7,7 @@ import uuid
 
 import paho.mqtt.client as mqtt
 import paho.mqtt.reasoncodes as mqttrc
-from kafka.errors import (KafkaError, KafkaTimeoutError, NoBrokersAvailable,
-                          TopicAlreadyExistsError)
+from kafka.errors import KafkaError, KafkaTimeoutError, NoBrokersAvailable
 from paho.mqtt.enums import MQTTErrorCode
 
 from avm.check_helpers import check_brokers, check_mqtt_host, check_mqtt_port
@@ -161,8 +160,7 @@ class BridgeMQTTKafka:
         return self._kafka_admin
 
     # Loop method - chiamata non bloccante che concede di non preoccuparsi di funzionalità utili come la riconnessione
-    # automatica al broker MQTT, ma anche il processamento del traffico di rete e della gestione delle callback.
-    # Creazione di un thread separato per effettuare queste operazioni
+    # automatica al broker MQTT, ma anche il processamento del traffico di rete e della gestione delle callback
     def loop_forever(self):
         self.get_mqtt_client().loop_forever()
 
@@ -290,7 +288,13 @@ class BridgeMQTTKafka:
             delim = "."
             flink_kafka_topic = delim.join(elements_flink_kafka_topic)
 
-        payload = json.loads(msg.payload.decode())
+        # Gestione locale di eventuali errori di decodifica del messaggio, per evitare che l'intero bridge si fermi a 
+        # seguito di un singolo messaggio non formattato correttamente
+        try:
+            payload = json.loads(msg.payload.decode())
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            sys.stderr.write(f"Payload MQTT non valido per il messaggio con id {msg.mid} sul topic {msg.topic}: {error}\n")
+            return
         # Dimensionamento dizionario degli ultimi messaggi
         last = 120
 
@@ -454,12 +458,15 @@ def main():
     # Messa in esecuzione del bridge
     try:
         bridge_mqtt_to_kafka.loop_forever()
-    except TopicAlreadyExistsError as error:
-        sys.stderr.write(f"{error}\n")
-        sys.exit(-9)
     except KafkaError as error:
         sys.stderr.write(f"{error}\n")
+        sys.exit(-9)
+    except RuntimeError as error:
+        sys.stderr.write(f"{error}\n")
         sys.exit(-10)
+    except Exception as error:
+        sys.stderr.write(f"{error}\n")
+        sys.exit(-11)
 
 
 if __name__ == "__main__":
